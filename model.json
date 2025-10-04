@@ -1,0 +1,39 @@
+{
+  "custom_types": {
+    "Subnet": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "network-wired",
+        "color": "#4CAF50"
+      }
+    },
+    "Site": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "building",
+        "color": "#607D8B"
+      }
+    },
+    "Device": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "microchip",
+        "color": "#FF9800"
+      }
+    },
+    "Website": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "globe",
+        "color": "#9C27B0"
+      }
+    },
+    "FileShare": {
+      "icon": {
+        "type": "font-awesome",
+        "name": "folder",
+        "color": "#FFE28E"
+      }
+    }
+  }
+}
