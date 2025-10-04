@@ -271,7 +271,7 @@ class ImpacketLDAPWrapper:
         return ip_address
     
     def _recursive_split_search(self, ldapConnection, search_base, search_filter, attributes, 
-                                prefix="", max_depth=7, current_depth=0, auth_label=""):
+                                prefix="", max_depth=7, current_depth=0, auth_label="", skipped_prefixes=None):
         """
         Recursive function to split LDAP searches when size limit is exceeded
         
@@ -281,13 +281,18 @@ class ImpacketLDAPWrapper:
             search_filter: Base search filter (e.g., "(objectClass=computer)")
             attributes: List of attributes to retrieve
             prefix: Current prefix being searched (e.g., "S", "SA", "SAB")
-            max_depth: Maximum recursion depth (default 5 characters)
+            max_depth: Maximum recursion depth (default 7 characters)
             current_depth: Current recursion depth
             auth_label: Label for logging (e.g., "Kerberos", "Password")
+            skipped_prefixes: List to track skipped prefixes (for reporting)
         
         Returns:
             List of search results
         """
+        # Initialize skipped_prefixes list if this is the first call
+        if skipped_prefixes is None:
+            skipped_prefixes = []
+        
         all_results = []
         
         # Create filter with current prefix
@@ -333,14 +338,19 @@ class ImpacketLDAPWrapper:
                         # Recursive call
                         results = self._recursive_split_search(
                             ldapConnection, search_base, search_filter, attributes,
-                            new_prefix, max_depth, current_depth + 1, auth_label
+                            new_prefix, max_depth, current_depth + 1, auth_label, skipped_prefixes
                         )
                         all_results.extend(results)
                     
                     return all_results
                 else:
                     # Reached max depth, can't split further
-                    logger.error(f"{log_prefix}⚠️ Prefix '{prefix}' still exceeds limit at max depth {max_depth}! Skipping...")
+                    logger.error(f"{log_prefix}⚠️ CRITICAL: Prefix '{prefix}' still exceeds 1000 results at maximum depth {max_depth}!")
+                    logger.error(f"{log_prefix}⚠️ This means 1000+ computers with prefix '{prefix}' are being SKIPPED!")
+                    logger.error(f"{log_prefix}💡 SOLUTION: Increase max_depth in the code (currently {max_depth}, try {max_depth + 2})")
+                    logger.error(f"{log_prefix}💡 Or contact the developer - this is an extremely rare edge case")
+                    # Track this skipped prefix
+                    skipped_prefixes.append(prefix)
                     return []
             else:
                 # Other error, re-raise
@@ -421,15 +431,23 @@ class ImpacketLDAPWrapper:
                                 logger.info("🔄 Kerberos: Using recursive split search")
                                 
                                 top_level_prefixes = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                                skipped_prefixes = []
                                 
                                 for prefix in top_level_prefixes:
                                     results = self._recursive_split_search(
                                         ldapConnection, search_base, search_filter,
-                                        attributes if attributes else ['*'], prefix, max_depth=7, current_depth=0, auth_label="Kerberos"
+                                        attributes if attributes else ['*'], prefix, max_depth=7, current_depth=0, auth_label="Kerberos", skipped_prefixes=skipped_prefixes
                                     )
                                     all_results.extend(results)
                                 
                                 logger.info(f"📋 Kerberos recursive split search completed: {len(all_results)} entries")
+                                
+                                # Alert if any prefixes were skipped
+                                if skipped_prefixes:
+                                    logger.error(f"⚠️ Kerberos WARNING: {len(skipped_prefixes)} prefix(es) were skipped due to exceeding max depth!")
+                                    logger.error(f"⚠️ Kerberos: Skipped prefixes: {', '.join(skipped_prefixes)}")
+                                    logger.error(f"⚠️ Kerberos: Some computers were NOT retrieved!")
+                                    logger.error(f"💡 Increase max_depth=7 to max_depth=9 in the code to fix this")
                             else:
                                 logger.error("Kerberos: Size limit exceeded for non-computer search")
                                 raise
@@ -573,16 +591,24 @@ class ImpacketLDAPWrapper:
                         # Start with top-level prefixes: A-Z, 0-9
                         # Note: LDAP searches are case-insensitive, so A* matches both ABC and abc
                         top_level_prefixes = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                        skipped_prefixes = []
                         
                         for prefix in top_level_prefixes:
                             # Use recursive function - will automatically split as needed
                             results = self._recursive_split_search(
                                 ldapConnection, search_base, search_filter, 
-                                attributes or [], prefix, max_depth=7, current_depth=0
+                                attributes or [], prefix, max_depth=7, current_depth=0, auth_label="", skipped_prefixes=skipped_prefixes
                             )
                             all_results.extend(results)
                         
                         logger.info(f"📋 Recursive split search completed: {len(all_results)} entries retrieved")
+                        
+                        # Alert if any prefixes were skipped
+                        if skipped_prefixes:
+                            logger.error(f"⚠️ WARNING: {len(skipped_prefixes)} prefix(es) were skipped due to exceeding max depth!")
+                            logger.error(f"⚠️ Skipped prefixes: {', '.join(skipped_prefixes)}")
+                            logger.error(f"⚠️ This means some computers were NOT retrieved!")
+                            logger.error(f"💡 Increase max_depth=7 to max_depth=9 in the code to fix this")
                         resp = all_results
                     else:
                         # For non-computer searches, just raise the error
@@ -734,16 +760,24 @@ class ImpacketLDAPWrapper:
                             logger.info("🔄 Kerberos fallback: Using recursive split search")
                             
                             top_level_prefixes = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                            skipped_prefixes = []
                             
                             for prefix in top_level_prefixes:
                                 results = self._recursive_split_search(
                                     ldapConnection, search_base, search_filter,
                                     attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'], 
-                                    prefix, max_depth=7, current_depth=0, auth_label="Kerberos fallback"
+                                    prefix, max_depth=7, current_depth=0, auth_label="Kerberos fallback", skipped_prefixes=skipped_prefixes
                                 )
                                 all_results.extend(results)
                             
                             logger.info(f"📋 Kerberos fallback recursive split search completed: {len(all_results)} entries")
+                            
+                            # Alert if any prefixes were skipped
+                            if skipped_prefixes:
+                                logger.error(f"⚠️ Kerberos fallback WARNING: {len(skipped_prefixes)} prefix(es) were skipped due to exceeding max depth!")
+                                logger.error(f"⚠️ Kerberos fallback: Skipped prefixes: {', '.join(skipped_prefixes)}")
+                                logger.error(f"⚠️ Kerberos fallback: Some computers were NOT retrieved!")
+                                logger.error(f"💡 Increase max_depth=7 to max_depth=9 in the code to fix this")
                         else:
                             raise
                     
