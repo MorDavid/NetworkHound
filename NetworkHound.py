@@ -342,6 +342,7 @@ class ImpacketLDAPWrapper:
                             if '(objectClass=computer)' in search_filter:
                                 logger.info("🔄 Kerberos: Splitting computer search by first letter")
                                 
+                                # Note: LDAP searches are case-insensitive, so A* matches both ABC and abc
                                 search_ranges = [
                                     ('A', 'C'), ('D', 'F'), ('G', 'I'), ('J', 'L'), ('M', 'O'),
                                     ('P', 'R'), ('S', 'U'), ('V', 'X'), ('Y', 'Z'),
@@ -378,7 +379,40 @@ class ImpacketLDAPWrapper:
                                             logger.debug(f"Kerberos: Found {batch_count} computers in range {range_start}-{range_end}, total: {len(all_results)}")
                                     
                                     except Exception as split_error:
-                                        if 'sizeLimitExceeded' not in str(split_error):
+                                        if 'sizeLimitExceeded' in str(split_error):
+                                            # If range still too large, split to individual letters
+                                            if range_start != range_end and range_start != '*':
+                                                logger.warning(f"Kerberos: Range {range_start}-{range_end} too large, splitting to individual letters...")
+                                                for single_letter in [chr(i) for i in range(ord(range_start), ord(range_end) + 1)]:
+                                                    try:
+                                                        single_filter = f"(&{search_filter}(cn={single_letter}*))"
+                                                        logger.debug(f"Kerberos: Searching computers {single_letter}*...")
+                                                        
+                                                        resp = ldapConnection.search(
+                                                            searchBase=search_base,
+                                                            scope=2,
+                                                            searchFilter=single_filter,
+                                                            attributes=attributes if attributes else ['*'],
+                                                            sizeLimit=0
+                                                        )
+                                                        
+                                                        batch_count = 0
+                                                        for item in resp:
+                                                            if isinstance(item, ldapasn1.SearchResultEntry):
+                                                                all_results.append(item)
+                                                                batch_count += 1
+                                                        
+                                                        if batch_count > 0:
+                                                            logger.debug(f"Kerberos: Found {batch_count} computers starting with {single_letter}, total: {len(all_results)}")
+                                                    
+                                                    except Exception as single_error:
+                                                        if 'sizeLimitExceeded' in str(single_error):
+                                                            logger.error(f"⚠️ Kerberos: Even single letter {single_letter} exceeds limit (1000+)! Skipping...")
+                                                        else:
+                                                            logger.debug(f"Kerberos: Error in single letter search {single_letter}: {single_error}")
+                                            else:
+                                                logger.warning(f"Kerberos: Single letter/special range {range_start} exceeds limit, skipping...")
+                                        else:
                                             logger.debug(f"Kerberos split error {range_start}-{range_end}: {split_error}")
                                 
                                 logger.info(f"📋 Kerberos split search completed: {len(all_results)} entries")
@@ -523,6 +557,7 @@ class ImpacketLDAPWrapper:
                         logger.info("🔄 Splitting computer search by first letter (A-Z, 0-9, other)")
                         
                         # Search ranges: A-M, N-Z, 0-9, special chars
+                        # Note: LDAP searches are case-insensitive, so A* matches both ABC and abc
                         search_ranges = [
                             ('A', 'C'), ('D', 'F'), ('G', 'I'), ('J', 'L'), ('M', 'O'),
                             ('P', 'R'), ('S', 'U'), ('V', 'X'), ('Y', 'Z'),
@@ -564,7 +599,38 @@ class ImpacketLDAPWrapper:
                                 
                             except Exception as split_error:
                                 if 'sizeLimitExceeded' in str(split_error):
-                                    logger.warning(f"Still size limit exceeded for range {range_start}-{range_end}, skipping...")
+                                    # If range still too large, split to individual letters
+                                    if range_start != range_end and range_start != '*':
+                                        logger.warning(f"Range {range_start}-{range_end} too large, splitting to individual letters...")
+                                        for single_letter in [chr(i) for i in range(ord(range_start), ord(range_end) + 1)]:
+                                            try:
+                                                single_filter = f"(&{search_filter}(cn={single_letter}*))"
+                                                logger.debug(f"Searching computers {single_letter}*...")
+                                                
+                                                resp = ldapConnection.search(
+                                                    searchBase=search_base,
+                                                    scope=2,
+                                                    searchFilter=single_filter,
+                                                    attributes=attributes or [],
+                                                    sizeLimit=0
+                                                )
+                                                
+                                                batch_count = 0
+                                                for item in resp:
+                                                    if isinstance(item, ldapasn1.SearchResultEntry):
+                                                        all_results.append(item)
+                                                        batch_count += 1
+                                                
+                                                if batch_count > 0:
+                                                    logger.debug(f"Found {batch_count} computers starting with {single_letter}, total: {len(all_results)}")
+                                            
+                                            except Exception as single_error:
+                                                if 'sizeLimitExceeded' in str(single_error):
+                                                    logger.error(f"⚠️ Even single letter {single_letter} exceeds limit (1000+)! Skipping...")
+                                                else:
+                                                    logger.debug(f"Error in single letter search {single_letter}: {single_error}")
+                                    else:
+                                        logger.warning(f"Single letter/special range {range_start} exceeds limit, skipping...")
                                 else:
                                     logger.debug(f"Error in split search {range_start}-{range_end}: {split_error}")
                         
@@ -719,6 +785,7 @@ class ImpacketLDAPWrapper:
                             logger.warning(f"Kerberos fallback: Size limit exceeded, using split search...")
                             logger.info("🔄 Kerberos fallback: Splitting computer search by first letter")
                             
+                            # Note: LDAP searches are case-insensitive, so A* matches both ABC and abc
                             search_ranges = [
                                 ('A', 'C'), ('D', 'F'), ('G', 'I'), ('J', 'L'), ('M', 'O'),
                                 ('P', 'R'), ('S', 'U'), ('V', 'X'), ('Y', 'Z'),
@@ -755,7 +822,40 @@ class ImpacketLDAPWrapper:
                                         logger.debug(f"Kerberos fallback: Found {batch_count} computers in range {range_start}-{range_end}, total: {len(all_results)}")
                                 
                                 except Exception as split_error:
-                                    if 'sizeLimitExceeded' not in str(split_error):
+                                    if 'sizeLimitExceeded' in str(split_error):
+                                        # If range still too large, split to individual letters
+                                        if range_start != range_end and range_start != '*':
+                                            logger.warning(f"Kerberos fallback: Range {range_start}-{range_end} too large, splitting to individual letters...")
+                                            for single_letter in [chr(i) for i in range(ord(range_start), ord(range_end) + 1)]:
+                                                try:
+                                                    single_filter = f"(&{search_filter}(cn={single_letter}*))"
+                                                    logger.debug(f"Kerberos fallback: Searching computers {single_letter}*...")
+                                                    
+                                                    resp = ldapConnection.search(
+                                                        searchBase=search_base,
+                                                        scope=2,
+                                                        searchFilter=single_filter,
+                                                        attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
+                                                        sizeLimit=0
+                                                    )
+                                                    
+                                                    batch_count = 0
+                                                    for item in resp:
+                                                        if isinstance(item, ldapasn1.SearchResultEntry):
+                                                            all_results.append(item)
+                                                            batch_count += 1
+                                                    
+                                                    if batch_count > 0:
+                                                        logger.debug(f"Kerberos fallback: Found {batch_count} computers starting with {single_letter}, total: {len(all_results)}")
+                                                
+                                                except Exception as single_error:
+                                                    if 'sizeLimitExceeded' in str(single_error):
+                                                        logger.error(f"⚠️ Kerberos fallback: Even single letter {single_letter} exceeds limit (1000+)! Skipping...")
+                                                    else:
+                                                        logger.debug(f"Kerberos fallback: Error in single letter search {single_letter}: {single_error}")
+                                        else:
+                                            logger.warning(f"Kerberos fallback: Single letter/special range {range_start} exceeds limit, skipping...")
+                                    else:
                                         logger.debug(f"Kerberos fallback split error {range_start}-{range_end}: {split_error}")
                             
                             logger.info(f"📋 Kerberos fallback split search completed: {len(all_results)} entries")
