@@ -315,68 +315,78 @@ class ImpacketLDAPWrapper:
                         useCache=True
                     )
                     
-                    # Perform the search with paging to handle large result sets
-                    from impacket.ldap import ldapasn1 as ldapasn1_types
-                    PAGE_SIZE = 1000
+                    # Perform the search with split search to handle large result sets
                     all_results = []
-                    cookie = b''
                     
-                    while True:
-                        # Create search request with paging control
-                        searchControls = []
-                        if PAGE_SIZE > 0:
-                            # Add paging control
-                            paging_control = ldapasn1_types.SimplePagedResultsControl()
-                            paging_control['criticality'] = True
-                            paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
-                            paging_control['controlValue']['size'] = PAGE_SIZE
-                            paging_control['controlValue']['cookie'] = cookie
-                            searchControls.append(paging_control)
+                    # Try regular search first
+                    try:
+                        resp = ldapConnection.search(
+                            searchBase=search_base,
+                            scope=2,
+                            searchFilter=search_filter,
+                            attributes=attributes if attributes else ['*'],
+                            sizeLimit=0
+                        )
                         
-                        try:
-                            resp = ldapConnection.search(
-                                searchBase=search_base,
-                                scope=2,  # SCOPE_SUBTREE
-                                searchFilter=search_filter,
-                                attributes=attributes if attributes else ['*'],
-                                sizeLimit=0,  # No size limit when using paging
-                                searchControls=searchControls
-                            )
-                        except Exception as search_error:
-                            # If paging fails on first attempt, try without it
-                            if 'sizeLimitExceeded' in str(search_error) and not all_results:
-                                logger.warning(f"Size limit exceeded on Kerberos search, retrying with paging...")
-                                resp = ldapConnection.search(
-                                    searchBase=search_base,
-                                    scope=2,
-                                    searchFilter=search_filter,
-                                    attributes=attributes if attributes else ['*'],
-                                    sizeLimit=0
-                                )
-                            else:
-                                raise
-                        
-                        # Collect results from this page
-                        page_results = []
                         for item in resp:
                             if isinstance(item, ldapasn1.SearchResultEntry):
-                                page_results.append(item)
+                                all_results.append(item)
                         
-                        all_results.extend(page_results)
-                        
-                        # Check if there are more pages
-                        cookie = b''
-                        if hasattr(ldapConnection, '_lastSearchControls'):
-                            for control in ldapConnection._lastSearchControls:
-                                if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
-                                    cookie = control['controlValue']['cookie']
-                                    break
-                        
-                        # Exit if no more pages
-                        if not cookie:
-                            break
+                        logger.info(f"📋 Kerberos: Retrieved {len(all_results)} entries from LDAP")
+                    
+                    except Exception as search_error:
+                        # If size limit exceeded, try split search
+                        if 'sizeLimitExceeded' in str(search_error):
+                            logger.warning(f"Kerberos: Size limit exceeded, using split search...")
                             
-                        logger.debug(f"Kerberos: Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
+                            if '(objectClass=computer)' in search_filter:
+                                logger.info("🔄 Kerberos: Splitting computer search by first letter")
+                                
+                                search_ranges = [
+                                    ('A', 'C'), ('D', 'F'), ('G', 'I'), ('J', 'L'), ('M', 'O'),
+                                    ('P', 'R'), ('S', 'U'), ('V', 'X'), ('Y', 'Z'),
+                                    ('0', '9'), ('*', '*')
+                                ]
+                                
+                                for range_start, range_end in search_ranges:
+                                    try:
+                                        if range_start == '*':
+                                            split_filter = f"(&{search_filter}(!(cn=A*))(!(cn=B*))(!(cn=C*))(!(cn=D*))(!(cn=E*))(!(cn=F*))(!(cn=G*))(!(cn=H*))(!(cn=I*))(!(cn=J*))(!(cn=K*))(!(cn=L*))(!(cn=M*))(!(cn=N*))(!(cn=O*))(!(cn=P*))(!(cn=Q*))(!(cn=R*))(!(cn=S*))(!(cn=T*))(!(cn=U*))(!(cn=V*))(!(cn=W*))(!(cn=X*))(!(cn=Y*))(!(cn=Z*))(!(cn=0*))(!(cn=1*))(!(cn=2*))(!(cn=3*))(!(cn=4*))(!(cn=5*))(!(cn=6*))(!(cn=7*))(!(cn=8*))(!(cn=9*)))"
+                                        elif range_start == range_end:
+                                            split_filter = f"(&{search_filter}(cn={range_start}*))"
+                                        else:
+                                            letters = []
+                                            for i in range(ord(range_start), ord(range_end) + 1):
+                                                letters.append(f"(cn={chr(i)}*)")
+                                            split_filter = f"(&{search_filter}(|{''.join(letters)}))"
+                                        
+                                        resp = ldapConnection.search(
+                                            searchBase=search_base,
+                                            scope=2,
+                                            searchFilter=split_filter,
+                                            attributes=attributes if attributes else ['*'],
+                                            sizeLimit=0
+                                        )
+                                        
+                                        batch_count = 0
+                                        for item in resp:
+                                            if isinstance(item, ldapasn1.SearchResultEntry):
+                                                all_results.append(item)
+                                                batch_count += 1
+                                        
+                                        if batch_count > 0:
+                                            logger.debug(f"Kerberos: Found {batch_count} computers in range {range_start}-{range_end}, total: {len(all_results)}")
+                                    
+                                    except Exception as split_error:
+                                        if 'sizeLimitExceeded' not in str(split_error):
+                                            logger.debug(f"Kerberos split error {range_start}-{range_end}: {split_error}")
+                                
+                                logger.info(f"📋 Kerberos split search completed: {len(all_results)} entries")
+                            else:
+                                logger.error("Kerberos: Size limit exceeded for non-computer search")
+                                raise
+                        else:
+                            raise
                     
                     # Parse all collected results
                     entries = []
@@ -482,110 +492,11 @@ class ImpacketLDAPWrapper:
                     self.impacket_auth.domain
                 )
             
-            # Perform LDAP search with paging to handle large result sets
+            # Perform LDAP search with split search to handle large result sets
+            all_results = []
+            
+            # Try regular search first
             try:
-                from impacket.ldap import ldapasn1 as ldapasn1_types
-                PAGE_SIZE = 1000
-                all_results = []
-                cookie = b''
-                supports_paging = True
-                
-                while True:
-                    # Create search request with paging control
-                    searchControls = []
-                    if PAGE_SIZE > 0 and supports_paging:
-                        try:
-                            # Add paging control
-                            paging_control = ldapasn1_types.SimplePagedResultsControl()
-                            paging_control['criticality'] = True
-                            paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
-                            paging_control['controlValue']['size'] = PAGE_SIZE
-                            paging_control['controlValue']['cookie'] = cookie
-                            searchControls.append(paging_control)
-                        except (AttributeError, TypeError) as e:
-                            logger.debug(f"Paging controls not supported: {e}")
-                            supports_paging = False
-                    
-                    try:
-                        if supports_paging and searchControls:
-                            resp = ldapConnection.search(
-                                searchBase=search_base,
-                                scope=2,  # SCOPE_SUBTREE
-                                searchFilter=search_filter,
-                                attributes=attributes or [],
-                                sizeLimit=0,  # No size limit when using paging
-                                searchControls=searchControls
-                            )
-                        else:
-                            # Fallback to regular search without paging
-                            resp = ldapConnection.search(
-                                searchBase=search_base,
-                                scope=2,
-                                searchFilter=search_filter,
-                                attributes=attributes or [],
-                                sizeLimit=0
-                            )
-                    except TypeError as type_error:
-                        # searchControls parameter not supported, retry without it
-                        if 'searchControls' in str(type_error) and supports_paging:
-                            logger.debug("searchControls parameter not supported, falling back to regular search")
-                            supports_paging = False
-                            resp = ldapConnection.search(
-                                searchBase=search_base,
-                                scope=2,
-                                searchFilter=search_filter,
-                                attributes=attributes or [],
-                                sizeLimit=0
-                            )
-                        else:
-                            raise
-                    except Exception as search_error:
-                        # If size limit exceeded, we've done our best with paging
-                        if 'sizeLimitExceeded' in str(search_error):
-                            if all_results:
-                                logger.warning(f"Size limit exceeded after retrieving {len(all_results)} entries")
-                                break
-                            else:
-                                logger.error(f"Size limit exceeded on first page. Cannot retrieve all results.")
-                                raise
-                        else:
-                            raise
-                    
-                    # Collect results from this page
-                    page_results = []
-                    for item in resp:
-                        if isinstance(item, ldapasn1.SearchResultEntry):
-                            page_results.append(item)
-                    
-                    all_results.extend(page_results)
-                    
-                    # If paging not supported, return what we have
-                    if not supports_paging:
-                        break
-                    
-                    # Check if there are more pages
-                    cookie = b''
-                    if hasattr(ldapConnection, '_lastSearchControls'):
-                        for control in ldapConnection._lastSearchControls:
-                            try:
-                                if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
-                                    cookie = control['controlValue']['cookie']
-                                    break
-                            except (KeyError, AttributeError):
-                                pass
-                    
-                    # Exit if no more pages
-                    if not cookie:
-                        break
-                        
-                    logger.debug(f"Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
-                
-                # Use collected results
-                resp = all_results
-                logger.info(f"📋 Retrieved total of {len(all_results)} entries from LDAP")
-            except Exception as paging_error:
-                logger.warning(f"Paged search failed: {paging_error}, falling back to regular search")
-                # Final fallback - simple search without paging
                 resp = ldapConnection.search(
                     searchBase=search_base,
                     scope=2,
@@ -593,6 +504,78 @@ class ImpacketLDAPWrapper:
                     attributes=attributes or [],
                     sizeLimit=0
                 )
+                
+                # Collect results
+                for item in resp:
+                    if isinstance(item, ldapasn1.SearchResultEntry):
+                        all_results.append(item)
+                
+                logger.info(f"📋 Retrieved {len(all_results)} entries from LDAP")
+                resp = all_results
+                
+            except Exception as search_error:
+                # If size limit exceeded, try split search by first letter
+                if 'sizeLimitExceeded' in str(search_error):
+                    logger.warning(f"Size limit exceeded, using split search approach...")
+                    
+                    # Only split for computer objects
+                    if '(objectClass=computer)' in search_filter:
+                        logger.info("🔄 Splitting computer search by first letter (A-Z, 0-9, other)")
+                        
+                        # Search ranges: A-M, N-Z, 0-9, special chars
+                        search_ranges = [
+                            ('A', 'C'), ('D', 'F'), ('G', 'I'), ('J', 'L'), ('M', 'O'),
+                            ('P', 'R'), ('S', 'U'), ('V', 'X'), ('Y', 'Z'),
+                            ('0', '9'), ('*', '*')  # * = any other
+                        ]
+                        
+                        for range_start, range_end in search_ranges:
+                            try:
+                                if range_start == '*':
+                                    # Search for computers that don't start with A-Z or 0-9
+                                    split_filter = f"(&{search_filter}(!(cn=A*))(!(cn=B*))(!(cn=C*))(!(cn=D*))(!(cn=E*))(!(cn=F*))(!(cn=G*))(!(cn=H*))(!(cn=I*))(!(cn=J*))(!(cn=K*))(!(cn=L*))(!(cn=M*))(!(cn=N*))(!(cn=O*))(!(cn=P*))(!(cn=Q*))(!(cn=R*))(!(cn=S*))(!(cn=T*))(!(cn=U*))(!(cn=V*))(!(cn=W*))(!(cn=X*))(!(cn=Y*))(!(cn=Z*))(!(cn=0*))(!(cn=1*))(!(cn=2*))(!(cn=3*))(!(cn=4*))(!(cn=5*))(!(cn=6*))(!(cn=7*))(!(cn=8*))(!(cn=9*)))"
+                                elif range_start == range_end:
+                                    split_filter = f"(&{search_filter}(cn={range_start}*))"
+                                else:
+                                    # Create OR filter for the range
+                                    letters = []
+                                    for i in range(ord(range_start), ord(range_end) + 1):
+                                        letters.append(f"(cn={chr(i)}*)")
+                                    split_filter = f"(&{search_filter}(|{''.join(letters)}))"
+                                
+                                logger.debug(f"Searching computers {range_start}-{range_end}...")
+                                
+                                resp = ldapConnection.search(
+                                    searchBase=search_base,
+                                    scope=2,
+                                    searchFilter=split_filter,
+                                    attributes=attributes or [],
+                                    sizeLimit=0
+                                )
+                                
+                                batch_count = 0
+                                for item in resp:
+                                    if isinstance(item, ldapasn1.SearchResultEntry):
+                                        all_results.append(item)
+                                        batch_count += 1
+                                
+                                if batch_count > 0:
+                                    logger.debug(f"Found {batch_count} computers in range {range_start}-{range_end}, total: {len(all_results)}")
+                                
+                            except Exception as split_error:
+                                if 'sizeLimitExceeded' in str(split_error):
+                                    logger.warning(f"Still size limit exceeded for range {range_start}-{range_end}, skipping...")
+                                else:
+                                    logger.debug(f"Error in split search {range_start}-{range_end}: {split_error}")
+                        
+                        logger.info(f"📋 Split search completed: {len(all_results)} entries retrieved")
+                        resp = all_results
+                    else:
+                        # For non-computer searches, just raise the error
+                        logger.error("Size limit exceeded for non-computer search, cannot split")
+                        raise
+                else:
+                    raise
             
             # Parse results to match ldap3 format
             results = []
@@ -711,68 +694,73 @@ class ImpacketLDAPWrapper:
                         useCache=True
                     )
                     
-                    # Perform LDAP search for computer objects with paging
-                    from impacket.ldap import ldapasn1 as ldapasn1_types
-                    PAGE_SIZE = 1000
+                    # Perform LDAP search for computer objects with split search
                     all_results = []
-                    cookie = b''
                     
-                    while True:
-                        # Create search request with paging control
-                        searchControls = []
-                        if PAGE_SIZE > 0:
-                            # Add paging control
-                            paging_control = ldapasn1_types.SimplePagedResultsControl()
-                            paging_control['criticality'] = True
-                            paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
-                            paging_control['controlValue']['size'] = PAGE_SIZE
-                            paging_control['controlValue']['cookie'] = cookie
-                            searchControls.append(paging_control)
+                    # Try regular search first
+                    try:
+                        resp = ldapConnection.search(
+                            searchBase=search_base,
+                            scope=2,
+                            searchFilter=search_filter,
+                            attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
+                            sizeLimit=0
+                        )
                         
-                        try:
-                            resp = ldapConnection.search(
-                                searchBase=search_base,
-                                scope=2,  # SCOPE_SUBTREE
-                                searchFilter=search_filter,
-                                attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
-                                sizeLimit=0,  # No size limit when using paging
-                                searchControls=searchControls
-                            )
-                        except Exception as search_error:
-                            # If paging fails, try without it
-                            if 'sizeLimitExceeded' in str(search_error) and not all_results:
-                                logger.warning(f"Size limit exceeded on Kerberos fallback, retrying with paging...")
-                                resp = ldapConnection.search(
-                                    searchBase=search_base,
-                                    scope=2,
-                                    searchFilter=search_filter,
-                                    attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
-                                    sizeLimit=0
-                                )
-                            else:
-                                raise
-                        
-                        # Collect results from this page
-                        page_results = []
                         for item in resp:
                             if isinstance(item, ldapasn1.SearchResultEntry):
-                                page_results.append(item)
+                                all_results.append(item)
                         
-                        all_results.extend(page_results)
-                        
-                        # Check if there are more pages
-                        cookie = b''
-                        if hasattr(ldapConnection, '_lastSearchControls'):
-                            for control in ldapConnection._lastSearchControls:
-                                if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
-                                    cookie = control['controlValue']['cookie']
-                                    break
-                        
-                        # Exit if no more pages
-                        if not cookie:
-                            break
+                        logger.info(f"📋 Kerberos fallback: Retrieved {len(all_results)} entries")
+                    
+                    except Exception as search_error:
+                        # If size limit exceeded, try split search
+                        if 'sizeLimitExceeded' in str(search_error):
+                            logger.warning(f"Kerberos fallback: Size limit exceeded, using split search...")
+                            logger.info("🔄 Kerberos fallback: Splitting computer search by first letter")
                             
-                        logger.debug(f"Kerberos fallback: Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
+                            search_ranges = [
+                                ('A', 'C'), ('D', 'F'), ('G', 'I'), ('J', 'L'), ('M', 'O'),
+                                ('P', 'R'), ('S', 'U'), ('V', 'X'), ('Y', 'Z'),
+                                ('0', '9'), ('*', '*')
+                            ]
+                            
+                            for range_start, range_end in search_ranges:
+                                try:
+                                    if range_start == '*':
+                                        split_filter = f"(&{search_filter}(!(cn=A*))(!(cn=B*))(!(cn=C*))(!(cn=D*))(!(cn=E*))(!(cn=F*))(!(cn=G*))(!(cn=H*))(!(cn=I*))(!(cn=J*))(!(cn=K*))(!(cn=L*))(!(cn=M*))(!(cn=N*))(!(cn=O*))(!(cn=P*))(!(cn=Q*))(!(cn=R*))(!(cn=S*))(!(cn=T*))(!(cn=U*))(!(cn=V*))(!(cn=W*))(!(cn=X*))(!(cn=Y*))(!(cn=Z*))(!(cn=0*))(!(cn=1*))(!(cn=2*))(!(cn=3*))(!(cn=4*))(!(cn=5*))(!(cn=6*))(!(cn=7*))(!(cn=8*))(!(cn=9*)))"
+                                    elif range_start == range_end:
+                                        split_filter = f"(&{search_filter}(cn={range_start}*))"
+                                    else:
+                                        letters = []
+                                        for i in range(ord(range_start), ord(range_end) + 1):
+                                            letters.append(f"(cn={chr(i)}*)")
+                                        split_filter = f"(&{search_filter}(|{''.join(letters)}))"
+                                    
+                                    resp = ldapConnection.search(
+                                        searchBase=search_base,
+                                        scope=2,
+                                        searchFilter=split_filter,
+                                        attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
+                                        sizeLimit=0
+                                    )
+                                    
+                                    batch_count = 0
+                                    for item in resp:
+                                        if isinstance(item, ldapasn1.SearchResultEntry):
+                                            all_results.append(item)
+                                            batch_count += 1
+                                    
+                                    if batch_count > 0:
+                                        logger.debug(f"Kerberos fallback: Found {batch_count} computers in range {range_start}-{range_end}, total: {len(all_results)}")
+                                
+                                except Exception as split_error:
+                                    if 'sizeLimitExceeded' not in str(split_error):
+                                        logger.debug(f"Kerberos fallback split error {range_start}-{range_end}: {split_error}")
+                            
+                            logger.info(f"📋 Kerberos fallback split search completed: {len(all_results)} entries")
+                        else:
+                            raise
                     
                     # Parse results to match expected format
                     entries = []
@@ -1985,68 +1973,29 @@ def query_ad_subnets_impacket(impacket_auth, domain, dc_host=None):
         logger.info(f"🔍 Search base: {search_base}")
         logger.info(f"🔍 Search filter: {search_filter}")
         
-        # Perform LDAP search with paging
-        from impacket.ldap import ldapasn1 as ldapasn1_types
-        PAGE_SIZE = 1000
+        # Perform LDAP search (subnets typically don't exceed limit)
         all_results = []
-        cookie = b''
         
-        while True:
-            # Create search request with paging control
-            searchControls = []
-            if PAGE_SIZE > 0:
-                # Add paging control
-                paging_control = ldapasn1_types.SimplePagedResultsControl()
-                paging_control['criticality'] = True
-                paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
-                paging_control['controlValue']['size'] = PAGE_SIZE
-                paging_control['controlValue']['cookie'] = cookie
-                searchControls.append(paging_control)
+        try:
+            resp = ldapConnection.search(
+                searchBase=search_base,
+                scope=2,  # SCOPE_SUBTREE
+                searchFilter=search_filter,
+                attributes=['cn', 'siteObject', 'description'],
+                sizeLimit=0
+            )
             
-            try:
-                resp = ldapConnection.search(
-                    searchBase=search_base,
-                    scope=2,  # SCOPE_SUBTREE
-                    searchFilter=search_filter,
-                    attributes=['cn', 'siteObject', 'description'],
-                    sizeLimit=0,
-                    searchControls=searchControls
-                )
-            except Exception as search_error:
-                # If paging fails, try without it
-                if 'sizeLimitExceeded' in str(search_error) and not all_results:
-                    logger.warning(f"Size limit exceeded on subnet query, retrying with paging...")
-                    resp = ldapConnection.search(
-                        searchBase=search_base,
-                        scope=2,
-                        searchFilter=search_filter,
-                        attributes=['cn', 'siteObject', 'description'],
-                        sizeLimit=0
-                    )
-                else:
-                    raise
-            
-            # Collect results from this page
-            page_results = []
             for item in resp:
                 if isinstance(item, ldapasn1.SearchResultEntry):
-                    page_results.append(item)
+                    all_results.append(item)
             
-            all_results.extend(page_results)
-            
-            # Check if there are more pages
-            cookie = b''
-            if hasattr(ldapConnection, '_lastSearchControls'):
-                for control in ldapConnection._lastSearchControls:
-                    if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
-                        cookie = control['controlValue']['cookie']
-                        break
-            
-            # Exit if no more pages
-            if not cookie:
-                break
-                
-            logger.debug(f"Subnets: Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
+            logger.info(f"📋 Retrieved {len(all_results)} subnet entries from AD Sites and Services")
+        
+        except Exception as search_error:
+            if 'sizeLimitExceeded' in str(search_error):
+                logger.warning(f"Size limit exceeded on subnet query (unusual, but continuing with what we got)")
+            else:
+                raise
         
         ad_subnets = {}
         entry_count = 0
