@@ -59,22 +59,22 @@ python update_custom_nodes_to_bloodhound.py -s https://bloodhound.example.com -u
 
 Basic scan with AD authentication:
 ```bash
-python NetworkHound.py -c 192.168.0.11 -d company.local -u admin -p password
+python NetworkHound.py --dc 192.168.0.11 -d company.local -u admin -p password
 ```
 
 Full network analysis with port scanning, HTTP and SMB validation:
 ```bash
-python NetworkHound.py -c 192.168.0.11 -d company.local -u admin -p password --shadow-it --port-scan --valid-http --ssl --valid-smb --scan-threads 50 -Pn
+python NetworkHound.py --dc 192.168.0.11 -d company.local -u admin -p password --shadow-it --port-scan --valid-http --ssl --valid-smb --scan-threads 50 -Pn
 ```
 
 Using NTLM hash authentication:
 ```bash
-python NetworkHound.py -c 192.168.0.11 -d company.local -u admin --hashes aad3b435b51404eeaad3b435b51404ee:5fbc3d5fec8206a30f4b6c473d68ae76 
+python NetworkHound.py --dc 192.168.0.11 -d company.local -u admin --hashes aad3b435b51404eeaad3b435b51404ee:5fbc3d5fec8206a30f4b6c473d68ae76 
 ```
 
 Using Kerberos ticket authentication:
 ```bash
-python NetworkHound.py -c dc.company.local -d company.local -u admin --kerberos
+python NetworkHound.py --dc dc.company.local -d company.local -u admin --kerberos
 ```
 
 ### CLI Arguments
