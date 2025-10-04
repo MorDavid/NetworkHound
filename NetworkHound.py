@@ -315,17 +315,73 @@ class ImpacketLDAPWrapper:
                         useCache=True
                     )
                     
-                    # Perform the search
-                    resp = ldapConnection.search(
-                        searchBase=search_base,
-                        scope=2,  # SCOPE_SUBTREE
-                        searchFilter=search_filter,
-                        attributes=attributes if attributes else ['*'],
-                        sizeLimit=size_limit
-                    )
+                    # Perform the search with paging to handle large result sets
+                    from impacket.ldap import ldapasn1 as ldapasn1_types
+                    PAGE_SIZE = 1000
+                    all_results = []
+                    cookie = b''
+                    
+                    while True:
+                        # Create search request with paging control
+                        searchControls = []
+                        if PAGE_SIZE > 0:
+                            # Add paging control
+                            paging_control = ldapasn1_types.SimplePagedResultsControl()
+                            paging_control['criticality'] = True
+                            paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
+                            paging_control['controlValue']['size'] = PAGE_SIZE
+                            paging_control['controlValue']['cookie'] = cookie
+                            searchControls.append(paging_control)
+                        
+                        try:
+                            resp = ldapConnection.search(
+                                searchBase=search_base,
+                                scope=2,  # SCOPE_SUBTREE
+                                searchFilter=search_filter,
+                                attributes=attributes if attributes else ['*'],
+                                sizeLimit=0,  # No size limit when using paging
+                                searchControls=searchControls
+                            )
+                        except Exception as search_error:
+                            # If paging fails on first attempt, try without it
+                            if 'sizeLimitExceeded' in str(search_error) and not all_results:
+                                logger.warning(f"Size limit exceeded on Kerberos search, retrying with paging...")
+                                resp = ldapConnection.search(
+                                    searchBase=search_base,
+                                    scope=2,
+                                    searchFilter=search_filter,
+                                    attributes=attributes if attributes else ['*'],
+                                    sizeLimit=0
+                                )
+                            else:
+                                raise
+                        
+                        # Collect results from this page
+                        page_results = []
+                        for item in resp:
+                            if isinstance(item, ldapasn1.SearchResultEntry):
+                                page_results.append(item)
+                        
+                        all_results.extend(page_results)
+                        
+                        # Check if there are more pages
+                        cookie = b''
+                        if hasattr(ldapConnection, '_lastSearchControls'):
+                            for control in ldapConnection._lastSearchControls:
+                                if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
+                                    cookie = control['controlValue']['cookie']
+                                    break
+                        
+                        # Exit if no more pages
+                        if not cookie:
+                            break
+                            
+                        logger.debug(f"Kerberos: Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
+                    
+                    # Parse all collected results
                     entries = []
                     
-                    for item in resp:
+                    for item in all_results:
                         if isinstance(item, ldapasn1.SearchResultEntry):
                             entry_dict = {}
                             for attr in item['attributes']:
@@ -426,14 +482,117 @@ class ImpacketLDAPWrapper:
                     self.impacket_auth.domain
                 )
             
-            # Perform LDAP search
-            resp = ldapConnection.search(
-                searchBase=search_base,
-                scope=2,  # SCOPE_SUBTREE
-                searchFilter=search_filter,
-                attributes=attributes or [],
-                sizeLimit=size_limit if size_limit > 0 else 0
-            )
+            # Perform LDAP search with paging to handle large result sets
+            try:
+                from impacket.ldap import ldapasn1 as ldapasn1_types
+                PAGE_SIZE = 1000
+                all_results = []
+                cookie = b''
+                supports_paging = True
+                
+                while True:
+                    # Create search request with paging control
+                    searchControls = []
+                    if PAGE_SIZE > 0 and supports_paging:
+                        try:
+                            # Add paging control
+                            paging_control = ldapasn1_types.SimplePagedResultsControl()
+                            paging_control['criticality'] = True
+                            paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
+                            paging_control['controlValue']['size'] = PAGE_SIZE
+                            paging_control['controlValue']['cookie'] = cookie
+                            searchControls.append(paging_control)
+                        except (AttributeError, TypeError) as e:
+                            logger.debug(f"Paging controls not supported: {e}")
+                            supports_paging = False
+                    
+                    try:
+                        if supports_paging and searchControls:
+                            resp = ldapConnection.search(
+                                searchBase=search_base,
+                                scope=2,  # SCOPE_SUBTREE
+                                searchFilter=search_filter,
+                                attributes=attributes or [],
+                                sizeLimit=0,  # No size limit when using paging
+                                searchControls=searchControls
+                            )
+                        else:
+                            # Fallback to regular search without paging
+                            resp = ldapConnection.search(
+                                searchBase=search_base,
+                                scope=2,
+                                searchFilter=search_filter,
+                                attributes=attributes or [],
+                                sizeLimit=0
+                            )
+                    except TypeError as type_error:
+                        # searchControls parameter not supported, retry without it
+                        if 'searchControls' in str(type_error) and supports_paging:
+                            logger.debug("searchControls parameter not supported, falling back to regular search")
+                            supports_paging = False
+                            resp = ldapConnection.search(
+                                searchBase=search_base,
+                                scope=2,
+                                searchFilter=search_filter,
+                                attributes=attributes or [],
+                                sizeLimit=0
+                            )
+                        else:
+                            raise
+                    except Exception as search_error:
+                        # If size limit exceeded, we've done our best with paging
+                        if 'sizeLimitExceeded' in str(search_error):
+                            if all_results:
+                                logger.warning(f"Size limit exceeded after retrieving {len(all_results)} entries")
+                                break
+                            else:
+                                logger.error(f"Size limit exceeded on first page. Cannot retrieve all results.")
+                                raise
+                        else:
+                            raise
+                    
+                    # Collect results from this page
+                    page_results = []
+                    for item in resp:
+                        if isinstance(item, ldapasn1.SearchResultEntry):
+                            page_results.append(item)
+                    
+                    all_results.extend(page_results)
+                    
+                    # If paging not supported, return what we have
+                    if not supports_paging:
+                        break
+                    
+                    # Check if there are more pages
+                    cookie = b''
+                    if hasattr(ldapConnection, '_lastSearchControls'):
+                        for control in ldapConnection._lastSearchControls:
+                            try:
+                                if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
+                                    cookie = control['controlValue']['cookie']
+                                    break
+                            except (KeyError, AttributeError):
+                                pass
+                    
+                    # Exit if no more pages
+                    if not cookie:
+                        break
+                        
+                    logger.debug(f"Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
+                
+                # Use collected results
+                resp = all_results
+                logger.info(f"📋 Retrieved total of {len(all_results)} entries from LDAP")
+            except Exception as paging_error:
+                logger.warning(f"Paged search failed: {paging_error}, falling back to regular search")
+                # Final fallback - simple search without paging
+                resp = ldapConnection.search(
+                    searchBase=search_base,
+                    scope=2,
+                    searchFilter=search_filter,
+                    attributes=attributes or [],
+                    sizeLimit=0
+                )
             
             # Parse results to match ldap3 format
             results = []
@@ -552,18 +711,72 @@ class ImpacketLDAPWrapper:
                         useCache=True
                     )
                     
-                    # Perform LDAP search for computer objects
-                    resp = ldapConnection.search(
-                        searchBase=search_base,
-                        scope=2,  # SCOPE_SUBTREE
-                        searchFilter=search_filter,
-                        attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
-                        sizeLimit=size_limit if size_limit > 0 else 0
-                    )
+                    # Perform LDAP search for computer objects with paging
+                    from impacket.ldap import ldapasn1 as ldapasn1_types
+                    PAGE_SIZE = 1000
+                    all_results = []
+                    cookie = b''
+                    
+                    while True:
+                        # Create search request with paging control
+                        searchControls = []
+                        if PAGE_SIZE > 0:
+                            # Add paging control
+                            paging_control = ldapasn1_types.SimplePagedResultsControl()
+                            paging_control['criticality'] = True
+                            paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
+                            paging_control['controlValue']['size'] = PAGE_SIZE
+                            paging_control['controlValue']['cookie'] = cookie
+                            searchControls.append(paging_control)
+                        
+                        try:
+                            resp = ldapConnection.search(
+                                searchBase=search_base,
+                                scope=2,  # SCOPE_SUBTREE
+                                searchFilter=search_filter,
+                                attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
+                                sizeLimit=0,  # No size limit when using paging
+                                searchControls=searchControls
+                            )
+                        except Exception as search_error:
+                            # If paging fails, try without it
+                            if 'sizeLimitExceeded' in str(search_error) and not all_results:
+                                logger.warning(f"Size limit exceeded on Kerberos fallback, retrying with paging...")
+                                resp = ldapConnection.search(
+                                    searchBase=search_base,
+                                    scope=2,
+                                    searchFilter=search_filter,
+                                    attributes=attributes or ['objectSid', 'cn', 'dNSHostName', 'operatingSystem'],
+                                    sizeLimit=0
+                                )
+                            else:
+                                raise
+                        
+                        # Collect results from this page
+                        page_results = []
+                        for item in resp:
+                            if isinstance(item, ldapasn1.SearchResultEntry):
+                                page_results.append(item)
+                        
+                        all_results.extend(page_results)
+                        
+                        # Check if there are more pages
+                        cookie = b''
+                        if hasattr(ldapConnection, '_lastSearchControls'):
+                            for control in ldapConnection._lastSearchControls:
+                                if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
+                                    cookie = control['controlValue']['cookie']
+                                    break
+                        
+                        # Exit if no more pages
+                        if not cookie:
+                            break
+                            
+                        logger.debug(f"Kerberos fallback: Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
                     
                     # Parse results to match expected format
                     entries = []
-                    for item in resp:
+                    for item in all_results:
                         if isinstance(item, ldapasn1.SearchResultEntry):
                             entry_dict = {}
                             for attr in item['attributes']:
@@ -1772,19 +1985,73 @@ def query_ad_subnets_impacket(impacket_auth, domain, dc_host=None):
         logger.info(f"🔍 Search base: {search_base}")
         logger.info(f"🔍 Search filter: {search_filter}")
         
-        # Perform LDAP search
-        resp = ldapConnection.search(
-            searchBase=search_base,
-            scope=2,  # SCOPE_SUBTREE
-            searchFilter=search_filter,
-            attributes=['cn', 'siteObject', 'description'],
-            sizeLimit=0
-        )
+        # Perform LDAP search with paging
+        from impacket.ldap import ldapasn1 as ldapasn1_types
+        PAGE_SIZE = 1000
+        all_results = []
+        cookie = b''
+        
+        while True:
+            # Create search request with paging control
+            searchControls = []
+            if PAGE_SIZE > 0:
+                # Add paging control
+                paging_control = ldapasn1_types.SimplePagedResultsControl()
+                paging_control['criticality'] = True
+                paging_control['controlValue'] = ldapasn1_types.SimplePagedResultsControlValue()
+                paging_control['controlValue']['size'] = PAGE_SIZE
+                paging_control['controlValue']['cookie'] = cookie
+                searchControls.append(paging_control)
+            
+            try:
+                resp = ldapConnection.search(
+                    searchBase=search_base,
+                    scope=2,  # SCOPE_SUBTREE
+                    searchFilter=search_filter,
+                    attributes=['cn', 'siteObject', 'description'],
+                    sizeLimit=0,
+                    searchControls=searchControls
+                )
+            except Exception as search_error:
+                # If paging fails, try without it
+                if 'sizeLimitExceeded' in str(search_error) and not all_results:
+                    logger.warning(f"Size limit exceeded on subnet query, retrying with paging...")
+                    resp = ldapConnection.search(
+                        searchBase=search_base,
+                        scope=2,
+                        searchFilter=search_filter,
+                        attributes=['cn', 'siteObject', 'description'],
+                        sizeLimit=0
+                    )
+                else:
+                    raise
+            
+            # Collect results from this page
+            page_results = []
+            for item in resp:
+                if isinstance(item, ldapasn1.SearchResultEntry):
+                    page_results.append(item)
+            
+            all_results.extend(page_results)
+            
+            # Check if there are more pages
+            cookie = b''
+            if hasattr(ldapConnection, '_lastSearchControls'):
+                for control in ldapConnection._lastSearchControls:
+                    if control['controlType'] == ldapasn1_types.LDAP_CONTROL_PAGE_OID:
+                        cookie = control['controlValue']['cookie']
+                        break
+            
+            # Exit if no more pages
+            if not cookie:
+                break
+                
+            logger.debug(f"Subnets: Retrieved {len(page_results)} entries, total so far: {len(all_results)}, continuing...")
         
         ad_subnets = {}
         entry_count = 0
         
-        for item in resp:
+        for item in all_results:
             if isinstance(item, ldapasn1.SearchResultEntry):
                 entry_count += 1
                 entry_dict = {}
