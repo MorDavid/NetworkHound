@@ -1,0 +1,6 @@
+impacket
+ldap3
+requests
+urllib3
+dnspython
+bloodhound-opengraph

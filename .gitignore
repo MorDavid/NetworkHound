@@ -1,0 +1,36 @@
+# NetworkHound .gitignore
+
+# Output files - contain sensitive network information
+network_opengraph.json
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Sensitive data
+*.ccache
+*.kirbi
+
