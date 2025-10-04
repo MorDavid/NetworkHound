@@ -280,7 +280,24 @@ class ImpacketLDAPWrapper:
             target_host = self._resolve_dc_hostname(self.impacket_auth.target)
             logger.debug(f"Using target {target_host} for LDAP connection")
             
-            ldapConnection = LDAPConnection(f'ldap://{target_host}')
+            # Try to connect with resolved hostname (NetBIOS), fallback to original if it fails
+            ldapConnection = None
+            connection_error = None
+            try:
+                ldapConnection = LDAPConnection(f'ldap://{target_host}')
+            except Exception as e:
+                connection_error = e
+                logger.debug(f"Failed to connect to {target_host}: {e}")
+                if target_host != self.impacket_auth.target:
+                    logger.debug(f"Falling back to original hostname: {self.impacket_auth.target}")
+                    try:
+                        ldapConnection = LDAPConnection(f'ldap://{self.impacket_auth.target}')
+                        target_host = self.impacket_auth.target  # Update for subsequent operations
+                    except Exception as e2:
+                        logger.error(f"Failed to connect to original hostname {self.impacket_auth.target}: {e2}")
+                        raise
+                else:
+                    raise
             
             # Authenticate based on available credentials
             if self.impacket_auth.use_kerberos and self.impacket_auth.kerberos_ticket:
@@ -512,7 +529,18 @@ class ImpacketLDAPWrapper:
                     target_host = self._resolve_dc_hostname(self.impacket_auth.target)
                     logger.debug(f"Using target {target_host} for Kerberos LDAP")
                     
-                    ldapConnection = LDAPConnection(f'ldap://{target_host}')
+                    # Try to connect with resolved hostname (NetBIOS), fallback to original if it fails
+                    ldapConnection = None
+                    try:
+                        ldapConnection = LDAPConnection(f'ldap://{target_host}')
+                    except Exception as e:
+                        logger.debug(f"Failed to connect to {target_host}: {e}")
+                        if target_host != self.impacket_auth.target:
+                            logger.debug(f"Falling back to original hostname: {self.impacket_auth.target}")
+                            ldapConnection = LDAPConnection(f'ldap://{self.impacket_auth.target}')
+                            target_host = self.impacket_auth.target
+                        else:
+                            raise
                     ldapConnection.kerberosLogin(
                         user=self.impacket_auth.username,
                         password=self.impacket_auth.password,
@@ -1709,7 +1737,19 @@ def query_ad_subnets_impacket(impacket_auth, domain, dc_host=None):
         target_host = _resolve_dc_hostname_static(dc_host or impacket_auth.target)
         logger.debug(f"Using target {target_host} for Configuration container Kerberos")
         
-        ldapConnection = LDAPConnection(f'ldap://{target_host}')
+        # Try to connect with resolved hostname (NetBIOS), fallback to original if it fails
+        ldapConnection = None
+        original_host = dc_host or impacket_auth.target
+        try:
+            ldapConnection = LDAPConnection(f'ldap://{target_host}')
+        except Exception as e:
+            logger.debug(f"Failed to connect to {target_host}: {e}")
+            if target_host != original_host:
+                logger.debug(f"Falling back to original hostname: {original_host}")
+                ldapConnection = LDAPConnection(f'ldap://{original_host}')
+                target_host = original_host
+            else:
+                raise
         
         # Use Kerberos authentication for Configuration container access
         ldapConnection.kerberosLogin(
