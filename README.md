@@ -174,7 +174,6 @@ python NetworkHound.py -c dc.company.local -d company.local -u admin --kerberos
 **Computer/Device Nodes:**
 - `ip_addresses[]`: All resolved IP addresses
 - `open_ports[]`: Discovered open ports
-- `smb_services[]`: SMB service information with version and shares
 - `is_shadow_it`: Boolean flag for shadow-IT devices
 
 **Website Nodes:**
