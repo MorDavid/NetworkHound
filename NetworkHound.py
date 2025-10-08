@@ -255,26 +255,105 @@ class ImpacketLDAPWrapper:
         self.entries = []  # Store last search results
     
     def _resolve_dc_hostname(self, ip_address):
-        """Try to resolve DC IP to NetBIOS hostname for proper Kerberos SPN"""
+        """Try to resolve DC IP to NetBIOS hostname for proper Kerberos SPN
+        
+        Tries multiple methods:
+        1. SMB connection (TCP 445/139) - most reliable with proxychains
+        2. DNS PTR query (TCP if available)
+        3. nmblookup (UDP 137) - fallback
+        """
+        
+        # Method 1: SMB Connection (TCP - works with proxychains!)
+        try:
+            from impacket.smbconnection import SMBConnection
+            logger.debug(f"Trying SMB connection to {ip_address} for name resolution...")
+            
+            # Try anonymous SMB connection
+            smb = SMBConnection(ip_address, ip_address, timeout=10)
+            try:
+                smb.login('', '')  # Anonymous/null session
+            except:
+                # If anonymous fails, that's OK - we might still get the name
+                pass
+            
+            server_name = smb.getServerName()
+            if server_name and server_name != ip_address:
+                logger.debug(f"SMB resolved {ip_address} -> {server_name}")
+                try:
+                    smb.logoff()
+                except:
+                    pass
+                return server_name
+            
+            try:
+                smb.logoff()
+            except:
+                pass
+                
+        except Exception as e:
+            logger.debug(f"SMB name resolution failed: {e}")
+        
+        # Method 2: DNS PTR query (TCP)
+        try:
+            import dns.resolver
+            import dns.reversename
+            import dns.query
+            import dns.message
+            
+            logger.debug(f"Trying DNS PTR query for {ip_address}...")
+            
+            # Create reverse DNS name
+            addr = dns.reversename.from_address(ip_address)
+            
+            # Use DC/target as DNS server (more appropriate for internal network)
+            dns_server = self.impacket_auth.target if hasattr(self, 'impacket_auth') else ip_address
+            
+            # Try TCP first (works better with proxychains)
+            try:
+                query = dns.message.make_query(addr, 'PTR')
+                response = dns.query.tcp(query, dns_server, timeout=5)
+                
+                for rrset in response.answer:
+                    for rr in rrset:
+                        hostname = str(rr).rstrip('.')
+                        netbios_name = hostname.split('.')[0].upper()
+                        logger.debug(f"DNS PTR (TCP) resolved {ip_address} -> {netbios_name}")
+                        return netbios_name
+            except:
+                pass
+            
+            # Fallback to UDP
+            resolver = dns.resolver.Resolver()
+            answers = resolver.resolve(addr, 'PTR', lifetime=5)
+            for rdata in answers:
+                hostname = str(rdata).rstrip('.')
+                netbios_name = hostname.split('.')[0].upper()
+                logger.debug(f"DNS PTR resolved {ip_address} -> {netbios_name}")
+                return netbios_name
+                
+        except Exception as e:
+            logger.debug(f"DNS PTR resolution failed: {e}")
+        
+        # Method 3: nmblookup (UDP - legacy fallback)
         try:
             import subprocess
-            # Use nmblookup to get NetBIOS name
+            logger.debug(f"Trying nmblookup for {ip_address}...")
+            
             result = subprocess.run(['nmblookup', '-A', ip_address], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 lines = result.stdout.split('\n')
                 for line in lines:
-                    # Look for lines like "DC01            <00> -         B <ACTIVE>"
                     if '<00>' in line and 'B <ACTIVE>' in line and not '<GROUP>' in line:
                         hostname = line.split()[0].strip()
                         if hostname and hostname != ip_address:
-                            logger.debug(f"Resolved {ip_address} to NetBIOS name: {hostname}")
+                            logger.debug(f"nmblookup resolved {ip_address} -> {hostname}")
                             return hostname
         except Exception as e:
-            logger.debug(f"NetBIOS name resolution failed: {e}")
+            logger.debug(f"nmblookup failed: {e}")
         
         # Fallback to IP address
-        logger.debug(f"Using IP address as fallback: {ip_address}")
+        logger.debug(f"All name resolution methods failed, using IP address: {ip_address}")
         return ip_address
     
     def _recursive_split_search(self, ldapConnection, search_base, search_filter, attributes, 
@@ -1889,27 +1968,107 @@ def query_ad_subnets(connection, domain):
             return query_ad_subnets_impacket(connection.impacket_auth, domain, connection.impacket_auth.target)
         return {}
 
-def _resolve_dc_hostname_static(ip_address):
-    """Static version of DC hostname resolution for use outside class"""
+def _resolve_dc_hostname_static(ip_address, dns_server=None):
+    """Static version of DC hostname resolution for use outside class
+    
+    Tries multiple TCP-friendly methods (for proxychains compatibility):
+    1. SMB connection (TCP 445/139)
+    2. DNS PTR query (TCP)
+    3. nmblookup (UDP - fallback)
+    
+    Args:
+        ip_address: IP address to resolve
+        dns_server: DNS server to use for PTR query (defaults to ip_address itself, assuming it's a DC)
+    """
+    
+    # Method 1: SMB Connection (TCP - best for proxychains)
+    try:
+        from impacket.smbconnection import SMBConnection
+        logger.debug(f"Trying SMB connection to {ip_address} for name resolution...")
+        
+        smb = SMBConnection(ip_address, ip_address, timeout=10)
+        try:
+            smb.login('', '')
+        except:
+            pass
+        
+        server_name = smb.getServerName()
+        if server_name and server_name != ip_address:
+            logger.debug(f"SMB resolved {ip_address} -> {server_name}")
+            try:
+                smb.logoff()
+            except:
+                pass
+            return server_name
+        
+        try:
+            smb.logoff()
+        except:
+            pass
+            
+    except Exception as e:
+        logger.debug(f"SMB name resolution failed: {e}")
+    
+    # Method 2: DNS PTR query (TCP)
+    try:
+        import dns.resolver
+        import dns.reversename
+        import dns.query
+        import dns.message
+        
+        logger.debug(f"Trying DNS PTR query for {ip_address}...")
+        addr = dns.reversename.from_address(ip_address)
+        
+        # Use provided DNS server, or default to ip_address (assuming it's a DC with DNS)
+        dns_srv = dns_server if dns_server else ip_address
+        logger.debug(f"Using DNS server: {dns_srv}")
+        
+        # Try TCP first
+        try:
+            query = dns.message.make_query(addr, 'PTR')
+            response = dns.query.tcp(query, dns_srv, timeout=5)
+            
+            for rrset in response.answer:
+                for rr in rrset:
+                    hostname = str(rr).rstrip('.')
+                    netbios_name = hostname.split('.')[0].upper()
+                    logger.debug(f"DNS PTR (TCP) resolved {ip_address} -> {netbios_name}")
+                    return netbios_name
+        except:
+            pass
+        
+        # Fallback to UDP
+        resolver = dns.resolver.Resolver()
+        answers = resolver.resolve(addr, 'PTR', lifetime=5)
+        for rdata in answers:
+            hostname = str(rdata).rstrip('.')
+            netbios_name = hostname.split('.')[0].upper()
+            logger.debug(f"DNS PTR resolved {ip_address} -> {netbios_name}")
+            return netbios_name
+            
+    except Exception as e:
+        logger.debug(f"DNS PTR resolution failed: {e}")
+    
+    # Method 3: nmblookup (UDP - legacy fallback)
     try:
         import subprocess
-        # Use nmblookup to get NetBIOS name
+        logger.debug(f"Trying nmblookup for {ip_address}...")
+        
         result = subprocess.run(['nmblookup', '-A', ip_address], 
                               capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             lines = result.stdout.split('\n')
             for line in lines:
-                # Look for lines like "DC01            <00> -         B <ACTIVE>"
                 if '<00>' in line and 'B <ACTIVE>' in line and not '<GROUP>' in line:
                     hostname = line.split()[0].strip()
                     if hostname and hostname != ip_address:
-                        logger.debug(f"Resolved {ip_address} to NetBIOS name: {hostname}")
+                        logger.debug(f"nmblookup resolved {ip_address} -> {hostname}")
                         return hostname
     except Exception as e:
-        logger.debug(f"NetBIOS name resolution failed: {e}")
+        logger.debug(f"nmblookup failed: {e}")
     
     # Fallback to IP address
-    logger.debug(f"Using IP address as fallback: {ip_address}")
+    logger.debug(f"All name resolution methods failed, using IP address: {ip_address}")
     return ip_address
 
 def query_ad_subnets_impacket(impacket_auth, domain, dc_host=None):
@@ -2751,8 +2910,9 @@ Author: Mor David (www.mordavid.com) | License: Non-Commercial
     
     if manual_mode:
         logger.info(f"📋 Networks: {args.networks}")
-        dns_server = args.dns if args.dns else "8.8.8.8"  # Default to Google DNS in manual mode
-        logger.info(f"🌐 DNS Server: {dns_server}")
+        dns_server = args.dns  # Use system default DNS if not specified
+        dns_display = dns_server if dns_server else "System Default"
+        logger.info(f"🌐 DNS Server: {dns_display}")
         if getattr(args, 'dns_tcp', False):
             logger.info(f"🔧 DNS Protocol: TCP (forced)")
         else:
