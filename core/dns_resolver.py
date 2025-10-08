@@ -26,9 +26,10 @@ except ImportError:
 class DNSResolver:
     """DNS resolver with multiple resolution methods"""
     
-    def __init__(self, dns_server=None, max_threads=10):
+    def __init__(self, dns_server=None, max_threads=10, use_tcp=False):
         self.dns_server = dns_server
         self.max_threads = max_threads
+        self.use_tcp = use_tcp
     
     def test_connectivity(self, hostname):
         """Test if computer is reachable via ping"""
@@ -67,7 +68,13 @@ class DNSResolver:
         # Method 2: nslookup with specific DNS server (authoritative)
         if self.dns_server:
             try:
-                result = subprocess.run(['nslookup', hostname, self.dns_server], 
+                nslookup_cmd = ['nslookup']
+                # Add TCP flag if requested (some versions of nslookup support -vc for TCP)
+                if self.use_tcp:
+                    nslookup_cmd.extend(['-vc'])  # -vc = virtual circuit (TCP)
+                nslookup_cmd.extend([hostname, self.dns_server])
+                
+                result = subprocess.run(nslookup_cmd, 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     lines = result.stdout.split('\n')
@@ -77,8 +84,9 @@ class DNSResolver:
                             if (ip_address and not ip_address.endswith('#53') and 
                                 ip_address not in computer_ips):
                                 computer_ips.append(ip_address)
-                                resolution_methods.append("nslookup")
-                                logger.debug(f"nslookup found {hostname} -> {ip_address}")
+                                method_name = "nslookup-tcp" if self.use_tcp else "nslookup"
+                                resolution_methods.append(method_name)
+                                logger.debug(f"{method_name} found {hostname} -> {ip_address}")
             except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
                 logger.debug(f"nslookup failed for {hostname}: {e}")
         
@@ -89,13 +97,36 @@ class DNSResolver:
                 if self.dns_server:
                     resolver.nameservers = [self.dns_server]
                 
-                answers = resolver.resolve(hostname, 'A')
-                for answer in answers:
-                    ip = str(answer)
-                    if ip not in computer_ips:
-                        computer_ips.append(ip)
-                        resolution_methods.append("dnspython")
-                        logger.debug(f"DNS library found {hostname} -> {ip}")
+                # Configure TCP if requested
+                if self.use_tcp:
+                    # Force TCP for all queries
+                    import dns.query
+                    import dns.message
+                    
+                    # Build DNS query message
+                    query = dns.message.make_query(hostname, 'A')
+                    
+                    # Send query over TCP
+                    response = dns.query.tcp(query, self.dns_server or resolver.nameservers[0], timeout=10)
+                    
+                    # Parse response
+                    for rrset in response.answer:
+                        for rr in rrset:
+                            if rr.rdtype == dns.rdatatype.A:  # A record
+                                ip = str(rr)
+                                if ip not in computer_ips:
+                                    computer_ips.append(ip)
+                                    resolution_methods.append("dnspython-tcp")
+                                    logger.debug(f"DNS library (TCP) found {hostname} -> {ip}")
+                else:
+                    # Use UDP (default)
+                    answers = resolver.resolve(hostname, 'A')
+                    for answer in answers:
+                        ip = str(answer)
+                        if ip not in computer_ips:
+                            computer_ips.append(ip)
+                            resolution_methods.append("dnspython")
+                            logger.debug(f"DNS library found {hostname} -> {ip}")
             except Exception as e:
                 logger.debug(f"DNS library failed for {hostname}: {e}")
         

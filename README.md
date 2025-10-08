@@ -77,6 +77,16 @@ Using Kerberos ticket authentication:
 python NetworkHound.py --dc dc.company.local -d company.local -u admin --kerberos
 ```
 
+DNS over TCP (for proxy/firewall bypass):
+```bash
+python NetworkHound.py --dc dc.company.local -d company.local -u admin -p password --dns 8.8.8.8 --dns-tcp --verbose
+```
+
+Via proxychains with DNS over TCP:
+```bash
+proxychains python NetworkHound.py --dc dc.company.local -d company.local -u admin -p password --dns-tcp --port-scan
+```
+
 ### CLI Arguments
 
 **Required Arguments:**
@@ -103,6 +113,7 @@ python NetworkHound.py --dc dc.company.local -d company.local -u admin --kerbero
 
 **Additional Options:**
 - `--dns`: DNS server for queries (defaults to DC if not specified)
+- `--dns-tcp`: Use TCP for DNS queries instead of UDP (useful for proxy/firewall bypass)
 - `-o/--output`: Output JSON file (default: network_opengraph.json)
 - `--shadow-it`: Scan subnet ranges for shadow-IT devices
 - `-v/--verbose`: Enable verbose output with detailed resolution methods
@@ -113,10 +124,11 @@ python NetworkHound.py --dc dc.company.local -d company.local -u admin --kerbero
 
 ### 🌐 Multi-Method DNS Resolution
 - **Socket Resolution**: Standard Python socket hostname resolution
-- **nslookup**: Command-line DNS queries with specific DNS server
-- **dnspython**: Advanced DNS library with comprehensive record support
+- **nslookup**: Command-line DNS queries with specific DNS server (supports TCP with --dns-tcp)
+- **dnspython**: Advanced DNS library with comprehensive record support (TCP/UDP)
 - **getaddrinfo**: System-level address resolution
 - **Hostname Fallback**: Short hostname resolution for AD environments
+- **DNS over TCP**: Optional TCP mode for firewall bypass and proxy compatibility (--dns-tcp flag)
 
 ### 🔌 Advanced Port Scanning
 - **Threaded Scanning**: Concurrent port scanning with configurable thread pools

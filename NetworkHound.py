@@ -92,6 +92,12 @@ Examples:
   # Manual IP-range scan with custom DNS server and specific ports
   %(prog)s --networks "192.168.2.1-192.168.2.200" --dns 8.8.8.8 --ports 80,443,8080 --scan-timeout 5 --output web_scope.json
   
+  # DNS over TCP (useful for proxy/firewall bypass)
+  %(prog)s --dc dc.corp.local --domain corp.local --user admin --password 'P@ss' --dns 8.8.8.8 --dns-tcp --verbose
+  
+  # Via proxychains with DNS over TCP
+  proxychains %(prog)s --dc dc.corp.local --domain corp.local --user admin --password 'P@ss' --dns-tcp --port-scan
+  
   # Shadow-IT sweep across subnets (find non-domain devices)
   %(prog)s --dc dc.corp.local --domain corp.local --user auditor --password 'Audit123' --shadow-it --port-scan --verbose
         ''',
@@ -112,6 +118,7 @@ Examples:
     # Manual network specification (alternative to LDAP)
     parser.add_argument('--networks', '-N', help='Comma-separated list of networks to scan. Supports: CIDR (192.168.1.0/24), IP ranges (192.168.1.1-192.168.1.50), single IPs (172.16.1.10)')
     parser.add_argument('--dns', help='DNS server for ADIDNS queries (defaults to DC if not specified)')
+    parser.add_argument('--dns-tcp', action='store_true', help='Use TCP for DNS queries instead of UDP (useful for DNS over proxy/firewall)')
     parser.add_argument('--output', '-o', default='network_opengraph.json', help='Output JSON file (default: network_opengraph.json)')
     parser.add_argument('-Pn', action='store_true', help='Skip ping check, treat all hosts as online (same as nmap -Pn)')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output with detailed resolution methods')
@@ -289,6 +296,8 @@ class ImpacketLDAPWrapper:
         Returns:
             List of search results
         """
+        from impacket.ldap import ldapasn1
+        
         # Initialize skipped_prefixes list if this is the first call
         if skipped_prefixes is None:
             skipped_prefixes = []
@@ -1553,162 +1562,33 @@ def scan_ip_range(subnet_info, known_ips, max_threads=10, timeout=3):
     
     return shadow_devices
 
-def resolve_single_computer_ips(computer, dns_server=None):
-    """Enhanced IP resolution for a single computer using multiple methods"""
-    hostname = computer['dns_hostname'] if computer['dns_hostname'] else computer['computer_name']
-    if not hostname:
-        return []
+def resolve_single_computer_ips(computer, dns_server=None, use_tcp=False):
+    """Enhanced IP resolution for a single computer using multiple methods
     
-    logger.debug(f"Resolving: {hostname}")
-    computer_ips = []
-    resolution_methods = []
+    Note: This function is deprecated - use DNSResolver class instead!
+    Kept for backward compatibility only.
+    """
+    from core.dns_resolver import DNSResolver
     
-    # Method 1: Standard socket resolution (primary IP)
-    try:
-        ip_address = socket.gethostbyname(hostname)
-        if ip_address not in computer_ips:
-            computer_ips.append(ip_address)
-            resolution_methods.append("socket")
-            logger.debug(f"Socket resolved {hostname} -> {ip_address}")
-    except socket.gaierror as e:
-        logger.debug(f"Socket failed for {hostname}: {e}")
-    
-    # Method 2: nslookup with specific DNS server (authoritative)
-    if dns_server:
-        try:
-            result = subprocess.run(['nslookup', hostname, dns_server], 
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                lines = result.stdout.split('\n')
-                for line in lines:
-                    if 'Address:' in line and not line.startswith('Server:'):
-                        ip_address = line.split('Address:')[1].strip()
-                        if (ip_address and not ip_address.endswith('#53') and 
-                            ip_address not in computer_ips):
-                            computer_ips.append(ip_address)
-                            resolution_methods.append("nslookup")
-                            logger.debug(f"nslookup found {hostname} -> {ip_address}")
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
-            logger.debug(f"nslookup failed for {hostname}: {e}")
-    
-    # Method 3: dnspython library (if available)
-    if DNS_AVAILABLE:
-        try:
-            resolver = dns.resolver.Resolver()
-            if dns_server:
-                resolver.nameservers = [dns_server]
-            
-            answers = resolver.resolve(hostname, 'A')
-            for answer in answers:
-                ip = str(answer)
-                if ip not in computer_ips:
-                    computer_ips.append(ip)
-                    resolution_methods.append("dnspython")
-                    logger.debug(f"DNS library found {hostname} -> {ip}")
-        except Exception as e:
-            logger.debug(f"DNS library failed for {hostname}: {e}")
-    
-    # Method 4: getaddrinfo for comprehensive address resolution
-    try:
-        addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
-        for addr in addr_info:
-            ip = addr[4][0]
-            if ip not in computer_ips:
-                computer_ips.append(ip)
-                resolution_methods.append("getaddrinfo")
-                logger.debug(f"getaddrinfo found {hostname} -> {ip}")
-    except socket.gaierror:
-        pass
-    
-    # Method 5: Fallback to hostname without domain
-    if computer['computer_name'] and computer['computer_name'] != hostname:
-        try:
-            ip_address = socket.gethostbyname(computer['computer_name'])
-            if ip_address not in computer_ips:
-                computer_ips.append(ip_address)
-                resolution_methods.append("hostname-fallback")
-                logger.debug(f"Hostname fallback {computer['computer_name']} -> {ip_address}")
-        except socket.gaierror as e:
-            logger.debug(f"Hostname fallback failed for {computer['computer_name']}: {e}")
-    
-    # Test connectivity for first IP
-    connectivity_status = "Unknown"
-    if computer_ips:
-        is_online = test_connectivity(hostname)
-        connectivity_status = "Online" if is_online else "Offline"
-        logger.debug(f"Connectivity test: {connectivity_status}")
-    
-    return {
-        'ips': computer_ips,
-        'methods': resolution_methods,
-        'connectivity': connectivity_status,
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
+    # Use DNSResolver class for actual resolution
+    resolver = DNSResolver(dns_server=dns_server, max_threads=1, use_tcp=use_tcp)
+    return resolver.resolve_single_computer(computer, test_connectivity=True)
 
-def resolve_hostnames_to_ips_threaded(computers, dns_server=None, max_threads=10):
+def resolve_hostnames_to_ips_threaded(computers, dns_server=None, max_threads=10, use_tcp=False):
     """Enhanced IP resolution with threading support"""
-    ip_records = {}
-    resolution_stats = {
-        'total_computers': len(computers),
-        'successful_resolutions': 0,
-        'total_ips_found': 0,
-        'online_computers': 0,
-        'methods_used': set()
-    }
+    from core.dns_resolver import DNSResolver
     
-    logger.info(f"Starting threaded IP resolution for {len(computers)} computers...")
-    logger.info(f"DNS Server: {dns_server if dns_server else 'System default'}")
-    logger.info(f"Using {max_threads} concurrent threads")
-    logger.info("=" * 70)
+    # Use DNSResolver class for resolution
+    resolver = DNSResolver(dns_server=dns_server, max_threads=max_threads, use_tcp=use_tcp)
     
-    # Use ThreadPoolExecutor for concurrent DNS resolution
-    with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        # Submit all DNS resolution tasks
-        future_to_computer = {
-            executor.submit(resolve_single_computer_ips, computer, dns_server): computer
-            for computer in computers if computer['computer_name']
-        }
-        
-        # Collect results as they complete
-        completed = 0
-        for future in as_completed(future_to_computer):
-            computer = future_to_computer[future]
-            completed += 1
-            
-            logger.debug(f"[{completed}/{len(future_to_computer)}] Processing: {computer['computer_name']}")
-            
-            try:
-                resolution_result = future.result()
-                
-                if resolution_result['ips']:
-                    ip_records[computer['computer_name']] = resolution_result['ips']
-                    resolution_stats['successful_resolutions'] += 1
-                    resolution_stats['total_ips_found'] += len(resolution_result['ips'])
-                    resolution_stats['methods_used'].update(resolution_result['methods'])
-                    
-                    if resolution_result['connectivity'] == "Online":
-                        resolution_stats['online_computers'] += 1
-                    
-                    logger.debug(f"Summary: {len(resolution_result['ips'])} IPs found via {', '.join(resolution_result['methods'])}")
-                    logger.debug(f"   IPs: {', '.join(resolution_result['ips'])}")
-                    logger.debug(f"   Status: {resolution_result['connectivity']}")
-                else:
-                    logger.debug(f"No IPs resolved for {computer['computer_name']}")
-            except Exception as e:
-                logger.debug(f"Error resolving {computer['computer_name']}: {e}")
+    # Log DNS protocol being used
+    if use_tcp:
+        logger.info(f"🔧 DNS Protocol: TCP (forced)")
+    else:
+        logger.info(f"🔧 DNS Protocol: UDP (default)")
     
-    # Print final statistics
-    logger.info("=" * 70)
-    logger.info("THREADED RESOLUTION STATISTICS")
-    logger.info("=" * 70)
-    logger.info(f"Total computers processed: {resolution_stats['total_computers']}")
-    logger.info(f"Successful resolutions: {resolution_stats['successful_resolutions']}")
-    logger.info(f"Total IP addresses found: {resolution_stats['total_ips_found']}")
-    logger.info(f"Online computers: {resolution_stats['online_computers']}")
-    logger.info(f"Success rate: {(resolution_stats['successful_resolutions']/resolution_stats['total_computers'])*100:.1f}%")
-    logger.info(f"Methods used: {', '.join(sorted(resolution_stats['methods_used']))}")
-    logger.info(f"Average IPs per computer: {resolution_stats['total_ips_found']/max(resolution_stats['successful_resolutions'], 1):.1f}")
-    logger.info(f"Threads used: {max_threads}")
+    # Use the resolver's built-in threaded resolution
+    ip_records = resolver.resolve_computers_threaded(computers)
     
     return ip_records
 
@@ -2873,6 +2753,10 @@ Author: Mor David (www.mordavid.com) | License: Non-Commercial
         logger.info(f"📋 Networks: {args.networks}")
         dns_server = args.dns if args.dns else "8.8.8.8"  # Default to Google DNS in manual mode
         logger.info(f"🌐 DNS Server: {dns_server}")
+        if getattr(args, 'dns_tcp', False):
+            logger.info(f"🔧 DNS Protocol: TCP (forced)")
+        else:
+            logger.info(f"🔧 DNS Protocol: UDP (default)")
     else:
         # Use DC as DNS server if not specified
         dns_server = args.dns if args.dns else args.dc
@@ -2880,6 +2764,10 @@ Author: Mor David (www.mordavid.com) | License: Non-Commercial
         logger.info(f"🏢 Domain: {args.domain}")
         logger.info(f"👤 User: {args.user}")
         logger.info(f"🌐 DNS Server: {dns_server}")
+        if getattr(args, 'dns_tcp', False):
+            logger.info(f"🔧 DNS Protocol: TCP (forced)")
+        else:
+            logger.info(f"🔧 DNS Protocol: UDP (default)")
         
         # Show authentication method (impacket only)
         logger.info(f"🔐 Auth Method: impacket")
@@ -2946,7 +2834,7 @@ Author: Mor David (www.mordavid.com) | License: Non-Commercial
                 
                 # Use DNS resolver to test connectivity
                 from core.dns_resolver import DNSResolver
-                resolver = DNSResolver(dns_server, args.scan_threads)
+                resolver = DNSResolver(dns_server, args.scan_threads, use_tcp=getattr(args, 'dns_tcp', False))
                 live_results = resolver.test_connectivity_threaded(all_ips)
                 live_ips = [ip for ip, is_alive in live_results.items() if is_alive]
                 
@@ -3013,7 +2901,7 @@ Author: Mor David (www.mordavid.com) | License: Non-Commercial
             # Step 3: Resolve hostnames to IP addresses using threading
             logger.info("🔍 STEP 3: Resolving Computer Hostnames to IP Addresses")
             logger.info("=" * 70)
-            dns_records = resolve_hostnames_to_ips_threaded(computers, dns_server, args.scan_threads)
+            dns_records = resolve_hostnames_to_ips_threaded(computers, dns_server, args.scan_threads, use_tcp=getattr(args, 'dns_tcp', False))
         
         # Step 4: Perform shadow-IT scanning if requested  
         shadow_devices = {}
