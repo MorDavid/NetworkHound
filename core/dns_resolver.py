@@ -45,6 +45,34 @@ class DNSResolver:
         except (subprocess.TimeoutExpired, subprocess.SubprocessError):
             return False
     
+    def _is_valid_ip(self, ip_str):
+        """Check if IP address is valid and not multicast/reserved"""
+        try:
+            import ipaddress
+            ip = ipaddress.IPv4Address(ip_str)
+            
+            # Filter out invalid/reserved addresses
+            if ip.is_multicast:  # 224.0.0.0/4
+                logger.warning(f"⚠️  Filtered multicast IP: {ip_str} (common with proxychains - DNS through proxy may fail)")
+                return False
+            if ip.is_loopback:  # 127.0.0.0/8
+                logger.debug(f"Filtered out loopback IP: {ip_str}")
+                return False
+            if ip.is_link_local:  # 169.254.0.0/16
+                logger.debug(f"Filtered out link-local IP: {ip_str}")
+                return False
+            if ip.is_reserved:  # Reserved ranges
+                logger.debug(f"Filtered out reserved IP: {ip_str}")
+                return False
+            if str(ip) == '0.0.0.0':
+                logger.debug(f"Filtered out zero IP: {ip_str}")
+                return False
+            
+            return True
+        except Exception as e:
+            logger.debug(f"Invalid IP format: {ip_str} - {e}")
+            return False
+    
     def resolve_single_computer(self, computer, test_connectivity=False):
         """Enhanced IP resolution for a single computer using multiple methods"""
         hostname = computer['dns_hostname'] if computer['dns_hostname'] else computer['computer_name']
@@ -58,7 +86,7 @@ class DNSResolver:
         # Method 1: Standard socket resolution (primary IP)
         try:
             ip_address = socket.gethostbyname(hostname)
-            if ip_address not in computer_ips:
+            if ip_address not in computer_ips and self._is_valid_ip(ip_address):
                 computer_ips.append(ip_address)
                 resolution_methods.append("socket")
                 logger.debug(f"Socket resolved {hostname} -> {ip_address}")
@@ -82,7 +110,7 @@ class DNSResolver:
                         if 'Address:' in line and not line.startswith('Server:'):
                             ip_address = line.split('Address:')[1].strip()
                             if (ip_address and not ip_address.endswith('#53') and 
-                                ip_address not in computer_ips):
+                                ip_address not in computer_ips and self._is_valid_ip(ip_address)):
                                 computer_ips.append(ip_address)
                                 method_name = "nslookup-tcp" if self.use_tcp else "nslookup"
                                 resolution_methods.append(method_name)
@@ -93,6 +121,11 @@ class DNSResolver:
         # Method 3: dnspython library (if available)
         if DNS_AVAILABLE:
             try:
+                import dns.resolver
+                import dns.query
+                import dns.message
+                import dns.rdatatype
+                
                 resolver = dns.resolver.Resolver()
                 if self.dns_server:
                     resolver.nameservers = [self.dns_server]
@@ -100,9 +133,6 @@ class DNSResolver:
                 # Configure TCP if requested
                 if self.use_tcp:
                     # Force TCP for all queries
-                    import dns.query
-                    import dns.message
-                    
                     # Build DNS query message
                     query = dns.message.make_query(hostname, 'A')
                     
@@ -114,7 +144,7 @@ class DNSResolver:
                         for rr in rrset:
                             if rr.rdtype == dns.rdatatype.A:  # A record
                                 ip = str(rr)
-                                if ip not in computer_ips:
+                                if ip not in computer_ips and self._is_valid_ip(ip):
                                     computer_ips.append(ip)
                                     resolution_methods.append("dnspython-tcp")
                                     logger.debug(f"DNS library (TCP) found {hostname} -> {ip}")
@@ -123,7 +153,7 @@ class DNSResolver:
                     answers = resolver.resolve(hostname, 'A')
                     for answer in answers:
                         ip = str(answer)
-                        if ip not in computer_ips:
+                        if ip not in computer_ips and self._is_valid_ip(ip):
                             computer_ips.append(ip)
                             resolution_methods.append("dnspython")
                             logger.debug(f"DNS library found {hostname} -> {ip}")
@@ -135,7 +165,7 @@ class DNSResolver:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET)
             for addr in addr_info:
                 ip = addr[4][0]
-                if ip not in computer_ips:
+                if ip not in computer_ips and self._is_valid_ip(ip):
                     computer_ips.append(ip)
                     resolution_methods.append("getaddrinfo")
                     logger.debug(f"getaddrinfo found {hostname} -> {ip}")
@@ -146,7 +176,7 @@ class DNSResolver:
         if computer['computer_name'] and computer['computer_name'] != hostname:
             try:
                 ip_address = socket.gethostbyname(computer['computer_name'])
-                if ip_address not in computer_ips:
+                if ip_address not in computer_ips and self._is_valid_ip(ip_address):
                     computer_ips.append(ip_address)
                     resolution_methods.append("hostname-fallback")
                     logger.debug(f"Hostname fallback {computer['computer_name']} -> {ip_address}")

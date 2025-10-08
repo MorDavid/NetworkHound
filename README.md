@@ -4,7 +4,7 @@
 
 <img src="logo.png" alt="NetworkHound Logo" width="260"/>
 
-![Version](https://img.shields.io/badge/NetworkHound-v1.0-green?style=for-the-badge)
+![Version](https://img.shields.io/badge/NetworkHound-v1.2.1-green?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python&logoColor=white)
 ![Impacket](https://img.shields.io/badge/Powered_by-Impacket-red?style=for-the-badge)
 
@@ -86,6 +86,8 @@ Via proxychains with DNS over TCP:
 ```bash
 proxychains python NetworkHound.py --dc dc.company.local -d company.local -u admin -p password --dns-tcp --port-scan
 ```
+
+> **⚠️ Proxychains Note**: When using proxychains, always use `--dns-tcp` flag. This prevents multicast IP issues (224.*) that occur with UDP DNS through SOCKS proxies. See `BUGFIX_PROXYCHAINS_DNS.md` for details.
 
 ### CLI Arguments
 
