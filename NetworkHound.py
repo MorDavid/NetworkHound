@@ -456,84 +456,101 @@ class ImpacketLDAPWrapper:
                     
                     # Parse all collected results
                     entries = []
+                    parse_errors = 0
                     
-                    for item in all_results:
-                        if isinstance(item, ldapasn1.SearchResultEntry):
-                            entry_dict = {}
-                            for attr in item['attributes']:
-                                attr_name = str(attr['type'])
-                                attr_values = [str(val) for val in attr['vals']]
+                    for item_idx, item in enumerate(all_results):
+                        try:
+                            if isinstance(item, ldapasn1.SearchResultEntry):
+                                entry_dict = {}
                                 
-                                # Special handling for objectSid - convert binary to string
-                                if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                                for attr in item['attributes']:
                                     try:
-                                        # Get the raw binary SID from impacket
-                                        sid_binary = attr['vals'][0]
+                                        attr_name = str(attr['type'])
+                                        attr_values = [str(val) for val in attr['vals']]
                                         
-                                        # Handle both AttributeValue objects and direct bytes
-                                        if hasattr(sid_binary, 'asOctets'):
-                                            sid_binary = sid_binary.asOctets()
-                                        elif isinstance(sid_binary, str):
-                                            sid_binary = sid_binary.encode('latin1')
-                                        
-                                        # Parse binary SID structure
-                                        if isinstance(sid_binary, bytes) and len(sid_binary) >= 8:
+                                        # Special handling for objectSid - convert binary to string
+                                        if attr_name == 'objectSid' and attr_values and attr_values[0]:
                                             try:
-                                                import struct
-                                                revision = sid_binary[0]
-                                                sub_authority_count = sid_binary[1]
+                                                # Get the raw binary SID from impacket
+                                                sid_binary = attr['vals'][0]
                                                 
-                                                # Authority is 6 bytes, big-endian - ensure we have enough bytes
-                                                if len(sid_binary) >= 8:
-                                                    authority_bytes = sid_binary[2:8]
-                                                    logger.debug(f"Authority bytes: {authority_bytes.hex()}, length: {len(authority_bytes)}")
-                                                    if len(authority_bytes) == 6:
-                                                        authority_buffer = b'\x00\x00' + authority_bytes
-                                                        logger.debug(f"Authority buffer: {authority_buffer.hex()}, length: {len(authority_buffer)}")
-                                                        authority = struct.unpack('>Q', authority_buffer)[0]
+                                                # Handle both AttributeValue objects and direct bytes
+                                                if hasattr(sid_binary, 'asOctets'):
+                                                    sid_binary = sid_binary.asOctets()
+                                                elif isinstance(sid_binary, str):
+                                                    sid_binary = sid_binary.encode('latin1')
+                                                
+                                                # Parse binary SID structure
+                                                if isinstance(sid_binary, bytes) and len(sid_binary) >= 8:
+                                                    try:
+                                                        import struct
+                                                        revision = sid_binary[0]
+                                                        sub_authority_count = sid_binary[1]
                                                         
-                                                        # Build SID string
-                                                        sid_string = f"S-{revision}-{authority}"
-                                                        
-                                                        # Parse sub-authorities (little-endian 32-bit integers)
-                                                        for i in range(sub_authority_count):
-                                                            offset = 8 + (i * 4)
-                                                            if offset + 4 <= len(sid_binary):
-                                                                sub_auth = struct.unpack('<I', sid_binary[offset:offset+4])[0]
-                                                                sid_string += f"-{sub_auth}"
-                                                        
-                                                        entry_dict[attr_name] = sid_string
-                                                        logger.debug(f"Parsed real SID from Kerberos LDAP: {sid_string}")
-                                                    else:
-                                                        logger.debug(f"Authority bytes wrong length: {len(authority_bytes)}")
-                                                        entry_dict[attr_name] = f"INVALID_AUTHORITY_LENGTH"
+                                                        # Authority is 6 bytes, big-endian - ensure we have enough bytes
+                                                        if len(sid_binary) >= 8:
+                                                            authority_bytes = sid_binary[2:8]
+                                                            logger.debug(f"Authority bytes: {authority_bytes.hex()}, length: {len(authority_bytes)}")
+                                                            if len(authority_bytes) == 6:
+                                                                authority_buffer = b'\x00\x00' + authority_bytes
+                                                                logger.debug(f"Authority buffer: {authority_buffer.hex()}, length: {len(authority_buffer)}")
+                                                                authority = struct.unpack('>Q', authority_buffer)[0]
+                                                                
+                                                                # Build SID string
+                                                                sid_string = f"S-{revision}-{authority}"
+                                                                
+                                                                # Parse sub-authorities (little-endian 32-bit integers)
+                                                                for i in range(sub_authority_count):
+                                                                    offset = 8 + (i * 4)
+                                                                    if offset + 4 <= len(sid_binary):
+                                                                        sub_auth = struct.unpack('<I', sid_binary[offset:offset+4])[0]
+                                                                        sid_string += f"-{sub_auth}"
+                                                                
+                                                                entry_dict[attr_name] = sid_string
+                                                                logger.debug(f"Parsed real SID from Kerberos LDAP: {sid_string}")
+                                                            else:
+                                                                logger.warning(f"Authority bytes wrong length for entry {item_idx}: {len(authority_bytes)}")
+                                                                entry_dict[attr_name] = f"INVALID_AUTHORITY_LENGTH"
+                                                        else:
+                                                            logger.warning(f"SID binary too short for entry {item_idx}: {len(sid_binary)}")
+                                                            entry_dict[attr_name] = f"INVALID_SID_LENGTH"
+                                                    except Exception as parse_error:
+                                                        logger.warning(f"Failed to parse SID structure for entry {item_idx}: {parse_error}")
+                                                        entry_dict[attr_name] = f"SID_PARSE_ERROR"
                                                 else:
-                                                    logger.debug(f"SID binary too short: {len(sid_binary)}")
-                                                    entry_dict[attr_name] = f"INVALID_SID_LENGTH"
-                                            except Exception as parse_error:
-                                                logger.debug(f"Failed to parse SID structure: {parse_error}")
-                                                entry_dict[attr_name] = f"SID_PARSE_ERROR"
+                                                    logger.warning(f"Invalid SID binary format for entry {item_idx}")
+                                                    entry_dict[attr_name] = f"INVALID_SID_FORMAT"
+                                            except Exception as e:
+                                                logger.warning(f"Failed to parse binary SID for entry {item_idx}: {e}")
+                                                entry_dict[attr_name] = attr_values[0] if attr_values else None
                                         else:
-                                            logger.debug(f"Invalid SID binary format")
-                                            entry_dict[attr_name] = f"INVALID_SID_FORMAT"
-                                    except Exception as e:
-                                        logger.debug(f"Failed to parse binary SID: {e}")
-                                        entry_dict[attr_name] = attr_values[0]
-                                else:
-                                    entry_dict[attr_name] = attr_values[0] if attr_values else None
-                            
-                            class Entry:
-                                def __init__(self, data):
-                                    for key, value in data.items():
-                                        setattr(self, key, value)
-                                def __getattr__(self, name):
-                                    return None
-                            
-                            entries.append(Entry(entry_dict))
+                                            entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                    
+                                    except Exception as attr_error:
+                                        logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
+                                        continue
+                                
+                                class Entry:
+                                    def __init__(self, data):
+                                        for key, value in data.items():
+                                            setattr(self, key, value)
+                                    def __getattr__(self, name):
+                                        return None
+                                
+                                entries.append(Entry(entry_dict))
+                        
+                        except Exception as entry_error:
+                            parse_errors += 1
+                            logger.warning(f"Failed to parse entry {item_idx} in Kerberos direct LDAP: {entry_error}")
+                            continue
                     
                     ldapConnection.close()
                     self.entries = entries
-                    logger.info(f"✅ Found {len(entries)} computer objects via direct Kerberos LDAP")
+                    
+                    if parse_errors > 0:
+                        logger.warning(f"⚠️  Kerberos direct LDAP: {parse_errors}/{len(all_results)} entries failed to parse")
+                    
+                    logger.info(f"✅ Found {len(entries)} computer objects via direct Kerberos LDAP (parsed {len(entries)}/{len(all_results)})")
                     return entries
                     
                 except Exception as kerb_error:
@@ -619,78 +636,104 @@ class ImpacketLDAPWrapper:
             
             # Parse results to match ldap3 format
             results = []
-            for item in resp:
-                if isinstance(item, ldapasn1.SearchResultEntry):
-                    entry_dict = {}
-                    for attr in item['attributes']:
-                        attr_name = str(attr['type'])
-                        attr_values = [str(val) for val in attr['vals']]
+            parse_errors = 0
+            
+            for item_idx, item in enumerate(resp):
+                try:
+                    if isinstance(item, ldapasn1.SearchResultEntry):
+                        entry_dict = {}
                         
-                        # Special handling for objectSid - convert binary to string
-                        if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                        for attr in item['attributes']:
                             try:
-                                # Use the same SID parsing logic as in Kerberos fallback
-                                sid_raw = attr['vals'][0]
+                                attr_name = str(attr['type'])
+                                attr_values = [str(val) for val in attr['vals']]
                                 
-                                # Handle impacket AttributeValue object
-                                if hasattr(sid_raw, 'asOctets'):
-                                    sid_binary = sid_raw.asOctets()
-                                elif isinstance(sid_raw, bytes):
-                                    sid_binary = sid_raw
-                                elif isinstance(sid_raw, str):
-                                    sid_binary = sid_raw.encode('latin1')
-                                else:
-                                    sid_binary = str(sid_raw).encode('latin1')
-                                
-                                # Parse binary SID structure (same as main method)
-                                if isinstance(sid_binary, bytes) and len(sid_binary) >= 8:
-                                    import struct
-                                    revision = sid_binary[0]
-                                    sub_authority_count = sid_binary[1]
-                                    
-                                    if len(sid_binary) >= 8:
-                                        authority_bytes = sid_binary[2:8]
-                                        if len(authority_bytes) == 6:
-                                            authority = struct.unpack('>Q', b'\x00\x00' + authority_bytes)[0]
-                                            sid_string = f"S-{revision}-{authority}"
-                                            
-                                            for i in range(sub_authority_count):
-                                                offset = 8 + (i * 4)
-                                                if offset + 4 <= len(sid_binary):
-                                                    sub_auth = struct.unpack('<I', sid_binary[offset:offset+4])[0]
-                                                    sid_string += f"-{sub_auth}"
-                                            
-                                            entry_dict[attr_name] = sid_string
-                                            logger.debug(f"Parsed real SID from password auth: {sid_string}")
+                                # Special handling for objectSid - convert binary to string
+                                if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                                    try:
+                                        # Use the same SID parsing logic as in Kerberos fallback
+                                        sid_raw = attr['vals'][0]
+                                        
+                                        # Handle impacket AttributeValue object
+                                        if hasattr(sid_raw, 'asOctets'):
+                                            sid_binary = sid_raw.asOctets()
+                                        elif isinstance(sid_raw, bytes):
+                                            sid_binary = sid_raw
+                                        elif isinstance(sid_raw, str):
+                                            sid_binary = sid_raw.encode('latin1')
                                         else:
-                                            entry_dict[attr_name] = f"INVALID_AUTHORITY_LENGTH_{len(authority_bytes)}"
-                                    else:
-                                        entry_dict[attr_name] = f"SID_TOO_SHORT_{len(sid_binary)}"
+                                            sid_binary = str(sid_raw).encode('latin1')
+                                        
+                                        # Parse binary SID structure (same as main method)
+                                        if isinstance(sid_binary, bytes) and len(sid_binary) >= 8:
+                                            import struct
+                                            revision = sid_binary[0]
+                                            sub_authority_count = sid_binary[1]
+                                            
+                                            if len(sid_binary) >= 8:
+                                                authority_bytes = sid_binary[2:8]
+                                                if len(authority_bytes) == 6:
+                                                    authority = struct.unpack('>Q', b'\x00\x00' + authority_bytes)[0]
+                                                    sid_string = f"S-{revision}-{authority}"
+                                                    
+                                                    for i in range(sub_authority_count):
+                                                        offset = 8 + (i * 4)
+                                                        if offset + 4 <= len(sid_binary):
+                                                            sub_auth = struct.unpack('<I', sid_binary[offset:offset+4])[0]
+                                                            sid_string += f"-{sub_auth}"
+                                                    
+                                                    entry_dict[attr_name] = sid_string
+                                                    logger.debug(f"Parsed real SID from password auth: {sid_string}")
+                                                else:
+                                                    logger.warning(f"Invalid authority length for entry {item_idx}: {len(authority_bytes)}")
+                                                    entry_dict[attr_name] = f"INVALID_AUTHORITY_LENGTH_{len(authority_bytes)}"
+                                            else:
+                                                logger.warning(f"SID too short for entry {item_idx}: {len(sid_binary)} bytes")
+                                                entry_dict[attr_name] = f"SID_TOO_SHORT_{len(sid_binary)}"
+                                        else:
+                                            logger.warning(f"Invalid SID type for entry {item_idx}: {type(sid_binary)}")
+                                            entry_dict[attr_name] = f"INVALID_SID_TYPE_{type(sid_binary)}"
+                                    except Exception as sid_error:
+                                        logger.warning(f"Failed to parse SID for entry {item_idx}: {sid_error}")
+                                        entry_dict[attr_name] = str(attr_values[0]) if attr_values else None
                                 else:
-                                    entry_dict[attr_name] = f"INVALID_SID_TYPE_{type(sid_binary)}"
-                            except Exception as e:
-                                logger.warning(f"Failed to parse SID in password auth: {e}")
-                                entry_dict[attr_name] = str(attr_values[0])
-                        else:
-                            entry_dict[attr_name] = attr_values[0] if attr_values else None
-                    
-                    # Create entry object with proper attribute access
-                    class Entry:
-                        def __init__(self, data):
-                            for key, value in data.items():
-                                setattr(self, key, value)
+                                    entry_dict[attr_name] = attr_values[0] if attr_values else None
+                            
+                            except Exception as attr_error:
+                                logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
+                                continue
                         
-                        def __getattr__(self, name):
-                            return None  # Return None for missing attributes
-                    
-                    results.append(Entry(entry_dict))
+                        # Create entry object with proper attribute access
+                        class Entry:
+                            def __init__(self, data):
+                                for key, value in data.items():
+                                    setattr(self, key, value)
+                            
+                            def __getattr__(self, name):
+                                return None  # Return None for missing attributes
+                        
+                        results.append(Entry(entry_dict))
+                
+                except Exception as entry_error:
+                    parse_errors += 1
+                    logger.warning(f"Failed to parse entry {item_idx}: {entry_error}")
+                    continue
             
             ldapConnection.close()
             self.entries = results  # Store results for compatibility
+            
+            if parse_errors > 0:
+                logger.warning(f"⚠️  {parse_errors}/{len(resp)} entries failed to parse")
+            
+            logger.info(f"✅ Successfully parsed {len(results)}/{len(resp)} entries")
             return results
             
         except Exception as e:
             logger.error(f"Impacket LDAP search failed: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Exception details: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return []
     
     
@@ -783,92 +826,110 @@ class ImpacketLDAPWrapper:
                     
                     # Parse results to match expected format
                     entries = []
-                    for item in all_results:
-                        if isinstance(item, ldapasn1.SearchResultEntry):
-                            entry_dict = {}
-                            for attr in item['attributes']:
-                                attr_name = str(attr['type'])
-                                attr_values = [str(val) for val in attr['vals']]
+                    parse_errors = 0
+                    
+                    for item_idx, item in enumerate(all_results):
+                        try:
+                            if isinstance(item, ldapasn1.SearchResultEntry):
+                                entry_dict = {}
                                 
-                                # Special handling for objectSid
-                                if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                                for attr in item['attributes']:
                                     try:
-                                        # Get the raw binary SID from impacket
-                                        sid_raw = attr['vals'][0]
+                                        attr_name = str(attr['type'])
+                                        attr_values = [str(val) for val in attr['vals']]
                                         
-                                        # Handle impacket AttributeValue object
-                                        if hasattr(sid_raw, 'asOctets'):
-                                            # This is an AttributeValue object, get the raw bytes
-                                            sid_binary = sid_raw.asOctets()
-                                        elif isinstance(sid_raw, (bytes, str)):
-                                            if isinstance(sid_raw, str):
-                                                sid_binary = sid_raw.encode('latin1')
-                                            else:
-                                                sid_binary = sid_raw
-                                        else:
-                                            # Try to convert to string and then to bytes
-                                            sid_binary = str(sid_raw).encode('latin1')
-                                        
-                                        # Parse binary SID structure
-                                        if isinstance(sid_binary, bytes) and len(sid_binary) >= 8:
+                                        # Special handling for objectSid
+                                        if attr_name == 'objectSid' and attr_values and attr_values[0]:
                                             try:
-                                                revision = sid_binary[0]
-                                                sub_authority_count = sid_binary[1]
+                                                # Get the raw binary SID from impacket
+                                                sid_raw = attr['vals'][0]
                                                 
-                                                # Authority is 6 bytes, big-endian - ensure we have enough bytes
-                                                if len(sid_binary) >= 8:
-                                                    authority_bytes = sid_binary[2:8]
-                                                    logger.debug(f"Authority bytes: {authority_bytes.hex()}, length: {len(authority_bytes)}")
-                                                    if len(authority_bytes) == 6:
-                                                        authority_buffer = b'\x00\x00' + authority_bytes
-                                                        logger.debug(f"Authority buffer: {authority_buffer.hex()}, length: {len(authority_buffer)}")
-                                                        authority = struct.unpack('>Q', authority_buffer)[0]
-                                                        
-                                                        # Build SID string
-                                                        sid_string = f"S-{revision}-{authority}"
-                                                        
-                                                        # Parse sub-authorities (little-endian 32-bit integers)
-                                                        for i in range(sub_authority_count):
-                                                            offset = 8 + (i * 4)
-                                                            if offset + 4 <= len(sid_binary):
-                                                                sub_auth = struct.unpack('<I', sid_binary[offset:offset+4])[0]
-                                                                sid_string += f"-{sub_auth}"
-                                                        
-                                                        entry_dict[attr_name] = sid_string
-                                                        logger.debug(f"Parsed real SID from impacket: {sid_string}")
+                                                # Handle impacket AttributeValue object
+                                                if hasattr(sid_raw, 'asOctets'):
+                                                    # This is an AttributeValue object, get the raw bytes
+                                                    sid_binary = sid_raw.asOctets()
+                                                elif isinstance(sid_raw, (bytes, str)):
+                                                    if isinstance(sid_raw, str):
+                                                        sid_binary = sid_raw.encode('latin1')
                                                     else:
-                                                        logger.warning(f"Authority bytes wrong length: {len(authority_bytes)}")
-                                                        entry_dict[attr_name] = f"INVALID_AUTHORITY_LENGTH_{len(authority_bytes)}"
+                                                        sid_binary = sid_raw
                                                 else:
-                                                    logger.warning(f"SID too short for authority parsing: {len(sid_binary)} bytes")
-                                                    entry_dict[attr_name] = f"SID_TOO_SHORT_{len(sid_binary)}"
-                                            except Exception as parse_error:
-                                                logger.warning(f"Failed to parse SID bytes: {parse_error}")
-                                                logger.debug(f"SID binary: {sid_binary.hex() if isinstance(sid_binary, bytes) else str(sid_binary)}")
-                                                entry_dict[attr_name] = f"PARSE_ERROR_{parse_error}"
+                                                    # Try to convert to string and then to bytes
+                                                    sid_binary = str(sid_raw).encode('latin1')
+                                                
+                                                # Parse binary SID structure
+                                                if isinstance(sid_binary, bytes) and len(sid_binary) >= 8:
+                                                    try:
+                                                        revision = sid_binary[0]
+                                                        sub_authority_count = sid_binary[1]
+                                                        
+                                                        # Authority is 6 bytes, big-endian - ensure we have enough bytes
+                                                        if len(sid_binary) >= 8:
+                                                            authority_bytes = sid_binary[2:8]
+                                                            logger.debug(f"Authority bytes: {authority_bytes.hex()}, length: {len(authority_bytes)}")
+                                                            if len(authority_bytes) == 6:
+                                                                authority_buffer = b'\x00\x00' + authority_bytes
+                                                                logger.debug(f"Authority buffer: {authority_buffer.hex()}, length: {len(authority_buffer)}")
+                                                                authority = struct.unpack('>Q', authority_buffer)[0]
+                                                                
+                                                                # Build SID string
+                                                                sid_string = f"S-{revision}-{authority}"
+                                                                
+                                                                # Parse sub-authorities (little-endian 32-bit integers)
+                                                                for i in range(sub_authority_count):
+                                                                    offset = 8 + (i * 4)
+                                                                    if offset + 4 <= len(sid_binary):
+                                                                        sub_auth = struct.unpack('<I', sid_binary[offset:offset+4])[0]
+                                                                        sid_string += f"-{sub_auth}"
+                                                                
+                                                                entry_dict[attr_name] = sid_string
+                                                                logger.debug(f"Parsed real SID from impacket: {sid_string}")
+                                                            else:
+                                                                logger.warning(f"Authority bytes wrong length for entry {item_idx}: {len(authority_bytes)}")
+                                                                entry_dict[attr_name] = f"INVALID_AUTHORITY_LENGTH_{len(authority_bytes)}"
+                                                        else:
+                                                            logger.warning(f"SID too short for authority parsing in entry {item_idx}: {len(sid_binary)} bytes")
+                                                            entry_dict[attr_name] = f"SID_TOO_SHORT_{len(sid_binary)}"
+                                                    except Exception as parse_error:
+                                                        logger.warning(f"Failed to parse SID bytes for entry {item_idx}: {parse_error}")
+                                                        logger.debug(f"SID binary: {sid_binary.hex() if isinstance(sid_binary, bytes) else str(sid_binary)}")
+                                                        entry_dict[attr_name] = f"PARSE_ERROR_{parse_error}"
+                                                else:
+                                                    logger.warning(f"Invalid SID binary for entry {item_idx}: type={type(sid_binary)}, len={len(sid_binary) if hasattr(sid_binary, '__len__') else 'N/A'}")
+                                                    entry_dict[attr_name] = f"INVALID_SID_TYPE_{type(sid_binary)}"
+                                                    
+                                            except Exception as e:
+                                                logger.warning(f"Failed to parse binary SID for entry {item_idx}: {e}")
+                                                entry_dict[attr_name] = f"PARSE_ERROR_{e}"
                                         else:
-                                            logger.warning(f"Invalid SID binary: type={type(sid_binary)}, len={len(sid_binary) if hasattr(sid_binary, '__len__') else 'N/A'}")
-                                            entry_dict[attr_name] = f"INVALID_SID_TYPE_{type(sid_binary)}"
-                                            
-                                    except Exception as e:
-                                        logger.warning(f"Failed to parse binary SID: {e}")
-                                        entry_dict[attr_name] = f"PARSE_ERROR_{e}"
-                                else:
-                                    entry_dict[attr_name] = attr_values[0] if attr_values else None
-                            
-                            # Create entry object
-                            class Entry:
-                                def __init__(self, data):
-                                    for key, value in data.items():
-                                        setattr(self, key, value)
-                                def __getattr__(self, name):
-                                    return None
-                            
-                            entries.append(Entry(entry_dict))
+                                            entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                    
+                                    except Exception as attr_error:
+                                        logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
+                                        continue
+                                
+                                # Create entry object
+                                class Entry:
+                                    def __init__(self, data):
+                                        for key, value in data.items():
+                                            setattr(self, key, value)
+                                    def __getattr__(self, name):
+                                        return None
+                                
+                                entries.append(Entry(entry_dict))
+                        
+                        except Exception as entry_error:
+                            parse_errors += 1
+                            logger.warning(f"Failed to parse entry {item_idx} in Kerberos fallback: {entry_error}")
+                            continue
                     
                     ldapConnection.close()
                     self.entries = entries
-                    logger.info(f"✅ Found {len(entries)} computer objects via impacket password authentication")
+                    
+                    if parse_errors > 0:
+                        logger.warning(f"⚠️  Kerberos fallback: {parse_errors}/{len(all_results)} entries failed to parse")
+                    
+                    logger.info(f"✅ Found {len(entries)} computer objects via impacket password authentication (parsed {len(entries)}/{len(all_results)})")
                     return entries
                     
                 except Exception as e:
