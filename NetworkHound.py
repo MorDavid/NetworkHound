@@ -1259,29 +1259,47 @@ def query_computers(connection, domain):
             results = connection.search(search_base, search_filter, attributes=attributes)
             
             computers = []
+            skipped_computers = 0
+            synthetic_sid_count = 0
+            
             for entry in connection.entries:  # Use stored entries
                 # Get computer attributes
                 computer_name = getattr(entry, 'cn', None)
+                
+                # Skip if no computer name
+                if not computer_name:
+                    logger.warning(f"⚠️  Skipping entry with no computer name (cn)")
+                    skipped_computers += 1
+                    continue
+                
                 computer_sid_binary = getattr(entry, 'objectSid', None)
                 
                 # Get the real SID parsed from AD
                 clean_sid = computer_sid_binary  # This is now already parsed as string from LDAP
-                if not clean_sid or not isinstance(clean_sid, str) or not clean_sid.startswith('S-'):
-                    logger.error(f"Failed to get real SID from AD for {computer_name}, skipping computer")
-                    continue
-                else:
-                    logger.debug(f"Using real SID from AD for {computer_name}: {clean_sid}")
                 
-                # Only proceed if we have a valid SID
-                if not clean_sid:
-                    logger.warning(f"Skipping computer {computer_name} - no valid SID")
-                    continue
+                # Check if SID is valid (starts with S- and looks like a real SID)
+                if not clean_sid or not isinstance(clean_sid, str) or not clean_sid.startswith('S-1-5-21-'):
+                    # Generate synthetic SID for computers with failed/invalid SID parsing
+                    # Use a deterministic hash of computer name to ensure uniqueness
+                    import hashlib
+                    name_hash = int(hashlib.md5(computer_name.encode()).hexdigest()[:8], 16)
+                    synthetic_sid = f"S-1-5-21-SYNTHETIC-{name_hash}-{abs(hash(computer_name)) % 100000}"
+                    
+                    logger.warning(f"⚠️  Failed to parse SID for '{computer_name}', using synthetic SID")
+                    logger.debug(f"   Original SID value: {clean_sid}")
+                    logger.debug(f"   Synthetic SID: {synthetic_sid}")
+                    
+                    clean_sid = synthetic_sid
+                    synthetic_sid_count += 1
+                else:
+                    logger.debug(f"✅ Using real SID from AD for {computer_name}: {clean_sid}")
                 
                 computer_info = {
                     'sid': clean_sid,
                     'computer_name': computer_name,
                     'dns_hostname': getattr(entry, 'dNSHostName', None),
-                    'os': getattr(entry, 'operatingSystem', None)
+                    'os': getattr(entry, 'operatingSystem', None),
+                    'is_synthetic_sid': not clean_sid.startswith('S-1-5-21-') or 'SYNTHETIC' in clean_sid
                 }
                 
                 # SMB shares will be added later via SMB validation results
@@ -1290,6 +1308,16 @@ def query_computers(connection, domain):
                 computers.append(computer_info)
             
             logger.info(f"📋 Found {len(computers)} computer objects from AD")
+            
+            # Print summary statistics
+            if synthetic_sid_count > 0:
+                logger.warning(f"⚠️  {synthetic_sid_count} computers have synthetic SIDs (SID parsing failed)")
+            if skipped_computers > 0:
+                logger.warning(f"⚠️  {skipped_computers} entries skipped (no computer name)")
+            
+            logger.info(f"✅ Successfully processed: {len(computers)} computers")
+            logger.info(f"   - Real SIDs: {len(computers) - synthetic_sid_count}")
+            logger.info(f"   - Synthetic SIDs: {synthetic_sid_count}")
             
             # SMB shares will be determined by SMB validation, not added here
             
