@@ -560,14 +560,9 @@ class ImpacketLDAPWrapper:
                                             entry_dict[attr_name] = None
                                             continue
                                         
-                                        attr_values = [str(val) for val in attr['vals'] if val is not None]
-                                        
-                                        if not attr_values:
-                                            entry_dict[attr_name] = None
-                                            continue
-                                        
                                         # Special handling for objectSid - convert binary to string
-                                        if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                                        # IMPORTANT: Check for objectSid BEFORE converting to string!
+                                        if attr_name == 'objectSid':
                                             try:
                                                 logger.debug(f"Entry {item_idx}: Parsing objectSid...")
                                                 # Get the raw binary SID from impacket
@@ -622,9 +617,19 @@ class ImpacketLDAPWrapper:
                                                     entry_dict[attr_name] = f"INVALID_SID_FORMAT"
                                             except Exception as e:
                                                 logger.warning(f"Failed to parse binary SID for entry {item_idx}: {e}")
-                                                entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                                entry_dict[attr_name] = "SID_PARSE_FAILED"
                                         else:
-                                            entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                            # For non-objectSid attributes, safely convert to string
+                                            try:
+                                                attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                                entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                            except Exception as str_error:
+                                                logger.debug(f"Failed to convert attribute '{attr_name}' to string for entry {item_idx}: {str_error}")
+                                                # Try to get raw value without string conversion
+                                                try:
+                                                    entry_dict[attr_name] = attr['vals'][0] if attr['vals'] else None
+                                                except:
+                                                    entry_dict[attr_name] = None
                                     
                                     except Exception as attr_error:
                                         import traceback
@@ -755,14 +760,9 @@ class ImpacketLDAPWrapper:
                                     entry_dict[attr_name] = None
                                     continue
                                 
-                                attr_values = [str(val) for val in attr['vals'] if val is not None]
-                                
-                                if not attr_values:
-                                    entry_dict[attr_name] = None
-                                    continue
-                                
                                 # Special handling for objectSid - convert binary to string
-                                if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                                # IMPORTANT: Check for objectSid BEFORE converting to string!
+                                if attr_name == 'objectSid':
                                     try:
                                         # Use the same SID parsing logic as in Kerberos fallback
                                         sid_raw = attr['vals'][0]
@@ -808,9 +808,19 @@ class ImpacketLDAPWrapper:
                                             entry_dict[attr_name] = f"INVALID_SID_TYPE_{type(sid_binary)}"
                                     except Exception as sid_error:
                                         logger.warning(f"Failed to parse SID for entry {item_idx}: {sid_error}")
-                                        entry_dict[attr_name] = str(attr_values[0]) if attr_values else None
+                                        entry_dict[attr_name] = "SID_PARSE_FAILED"
                                 else:
-                                    entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                    # For non-objectSid attributes, safely convert to string
+                                    try:
+                                        attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                        entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                    except Exception as str_error:
+                                        logger.debug(f"Failed to convert attribute '{attr_name}' to string for entry {item_idx}: {str_error}")
+                                        # Try to get raw value without string conversion
+                                        try:
+                                            entry_dict[attr_name] = attr['vals'][0] if attr['vals'] else None
+                                        except:
+                                            entry_dict[attr_name] = None
                             
                             except Exception as attr_error:
                                 import traceback
@@ -958,14 +968,9 @@ class ImpacketLDAPWrapper:
                                             entry_dict[attr_name] = None
                                             continue
                                         
-                                        attr_values = [str(val) for val in attr['vals'] if val is not None]
-                                        
-                                        if not attr_values:
-                                            entry_dict[attr_name] = None
-                                            continue
-                                        
                                         # Special handling for objectSid
-                                        if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                                        # IMPORTANT: Check for objectSid BEFORE converting to string!
+                                        if attr_name == 'objectSid':
                                             try:
                                                 # Get the raw binary SID from impacket
                                                 sid_raw = attr['vals'][0]
@@ -1026,9 +1031,19 @@ class ImpacketLDAPWrapper:
                                                     
                                             except Exception as e:
                                                 logger.warning(f"Failed to parse binary SID for entry {item_idx}: {e}")
-                                                entry_dict[attr_name] = f"PARSE_ERROR_{e}"
+                                                entry_dict[attr_name] = "SID_PARSE_FAILED"
                                         else:
-                                            entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                            # For non-objectSid attributes, safely convert to string
+                                            try:
+                                                attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                                entry_dict[attr_name] = attr_values[0] if attr_values else None
+                                            except Exception as str_error:
+                                                logger.debug(f"Failed to convert attribute '{attr_name}' to string for entry {item_idx}: {str_error}")
+                                                # Try to get raw value without string conversion
+                                                try:
+                                                    entry_dict[attr_name] = attr['vals'][0] if attr['vals'] else None
+                                                except:
+                                                    entry_dict[attr_name] = None
                                     
                                     except Exception as attr_error:
                                         import traceback
@@ -1129,14 +1144,9 @@ class ImpacketLDAPWrapper:
                             entry_dict[attr_name] = None
                             continue
                         
-                        attr_values = [str(val) for val in attr['vals'] if val is not None]
-                        
-                        if not attr_values:
-                            entry_dict[attr_name] = None
-                            continue
-                        
                         # Special handling for objectSid
-                        if attr_name == 'objectSid' and attr_values and attr_values[0]:
+                        # IMPORTANT: Check for objectSid BEFORE converting to string!
+                        if attr_name == 'objectSid':
                             try:
                                 # Use the same SID parsing logic as in the main method
                                 sid_raw = attr['vals'][0]
@@ -1180,9 +1190,19 @@ class ImpacketLDAPWrapper:
                                     entry_dict[attr_name] = f"INVALID_SID_TYPE_{type(sid_binary)}"
                             except Exception as e:
                                 logger.warning(f"Failed to parse SID in pure impacket method: {e}")
-                                entry_dict[attr_name] = str(attr_values[0])
+                                entry_dict[attr_name] = "SID_PARSE_FAILED"
                         else:
-                            entry_dict[attr_name] = attr_values[0] if attr_values else None
+                            # For non-objectSid attributes, safely convert to string
+                            try:
+                                attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                entry_dict[attr_name] = attr_values[0] if attr_values else None
+                            except Exception as str_error:
+                                logger.debug(f"Failed to convert attribute '{attr_name}' to string: {str_error}")
+                                # Try to get raw value without string conversion
+                                try:
+                                    entry_dict[attr_name] = attr['vals'][0] if attr['vals'] else None
+                                except:
+                                    entry_dict[attr_name] = None
                     
                     # Create entry object
                     class Entry:
