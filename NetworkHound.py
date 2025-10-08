@@ -554,13 +554,25 @@ class ImpacketLDAPWrapper:
                                 for attr in item['attributes']:
                                     try:
                                         attr_name = str(attr['type'])
-                                        attr_values = [str(val) for val in attr['vals']]
+                                        
+                                        # Handle empty or None attribute values
+                                        if not attr['vals'] or len(attr['vals']) == 0:
+                                            entry_dict[attr_name] = None
+                                            continue
+                                        
+                                        attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                        
+                                        if not attr_values:
+                                            entry_dict[attr_name] = None
+                                            continue
                                         
                                         # Special handling for objectSid - convert binary to string
                                         if attr_name == 'objectSid' and attr_values and attr_values[0]:
                                             try:
+                                                logger.debug(f"Entry {item_idx}: Parsing objectSid...")
                                                 # Get the raw binary SID from impacket
                                                 sid_binary = attr['vals'][0]
+                                                logger.debug(f"Entry {item_idx}: SID raw type: {type(sid_binary)}")
                                                 
                                                 # Handle both AttributeValue objects and direct bytes
                                                 if hasattr(sid_binary, 'asOctets'):
@@ -615,7 +627,9 @@ class ImpacketLDAPWrapper:
                                             entry_dict[attr_name] = attr_values[0] if attr_values else None
                                     
                                     except Exception as attr_error:
+                                        import traceback
                                         logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
+                                        logger.debug(f"Attribute parsing traceback: {traceback.format_exc()}")
                                         continue
                                 
                                 class Entry:
@@ -734,7 +748,17 @@ class ImpacketLDAPWrapper:
                         for attr in item['attributes']:
                             try:
                                 attr_name = str(attr['type'])
-                                attr_values = [str(val) for val in attr['vals']]
+                                
+                                # Handle empty or None attribute values
+                                if not attr['vals'] or len(attr['vals']) == 0:
+                                    entry_dict[attr_name] = None
+                                    continue
+                                
+                                attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                
+                                if not attr_values:
+                                    entry_dict[attr_name] = None
+                                    continue
                                 
                                 # Special handling for objectSid - convert binary to string
                                 if attr_name == 'objectSid' and attr_values and attr_values[0]:
@@ -924,7 +948,17 @@ class ImpacketLDAPWrapper:
                                 for attr in item['attributes']:
                                     try:
                                         attr_name = str(attr['type'])
-                                        attr_values = [str(val) for val in attr['vals']]
+                                        
+                                        # Handle empty or None attribute values
+                                        if not attr['vals'] or len(attr['vals']) == 0:
+                                            entry_dict[attr_name] = None
+                                            continue
+                                        
+                                        attr_values = [str(val) for val in attr['vals'] if val is not None]
+                                        
+                                        if not attr_values:
+                                            entry_dict[attr_name] = None
+                                            continue
                                         
                                         # Special handling for objectSid
                                         if attr_name == 'objectSid' and attr_values and attr_values[0]:
@@ -993,7 +1027,9 @@ class ImpacketLDAPWrapper:
                                             entry_dict[attr_name] = attr_values[0] if attr_values else None
                                     
                                     except Exception as attr_error:
+                                        import traceback
                                         logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
+                                        logger.debug(f"Attribute parsing traceback: {traceback.format_exc()}")
                                         continue
                                 
                                 # Create entry object
@@ -1082,7 +1118,17 @@ class ImpacketLDAPWrapper:
                     entry_dict = {}
                     for attr in item['attributes']:
                         attr_name = str(attr['type'])
-                        attr_values = [str(val) for val in attr['vals']]
+                        
+                        # Handle empty or None attribute values
+                        if not attr['vals'] or len(attr['vals']) == 0:
+                            entry_dict[attr_name] = None
+                            continue
+                        
+                        attr_values = [str(val) for val in attr['vals'] if val is not None]
+                        
+                        if not attr_values:
+                            entry_dict[attr_name] = None
+                            continue
                         
                         # Special handling for objectSid
                         if attr_name == 'objectSid' and attr_values and attr_values[0]:
@@ -2155,7 +2201,13 @@ def query_ad_subnets_impacket(impacket_auth, domain, dc_host=None):
                 # Parse attributes
                 for attr in item['attributes']:
                     attr_name = str(attr['type'])
-                    attr_values = [str(val) for val in attr['vals']]
+                    
+                    # Handle empty or None attribute values
+                    if not attr['vals'] or len(attr['vals']) == 0:
+                        entry_dict[attr_name] = None
+                        continue
+                    
+                    attr_values = [str(val) for val in attr['vals'] if val is not None]
                     entry_dict[attr_name] = attr_values[0] if attr_values else None
                 
                 # Extract subnet information

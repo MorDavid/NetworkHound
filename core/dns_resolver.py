@@ -53,7 +53,7 @@ class DNSResolver:
             
             # Filter out invalid/reserved addresses
             if ip.is_multicast:  # 224.0.0.0/4
-                logger.warning(f"⚠️  Filtered multicast IP: {ip_str} (common with proxychains - DNS through proxy may fail)")
+                #logger.warning(f"⚠️  Filtered multicast IP: {ip_str} (common with proxychains - DNS through proxy may fail)")
                 return False
             if ip.is_loopback:  # 127.0.0.0/8
                 logger.debug(f"Filtered out loopback IP: {ip_str}")
