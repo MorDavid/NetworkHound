@@ -628,8 +628,9 @@ class ImpacketLDAPWrapper:
                                     
                                     except Exception as attr_error:
                                         import traceback
-                                        logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
-                                        logger.debug(f"Attribute parsing traceback: {traceback.format_exc()}")
+                                        attr_name_safe = attr_name if 'attr_name' in locals() else 'UNKNOWN'
+                                        logger.warning(f"Failed to parse attribute '{attr_name_safe}' for entry {item_idx}: {type(attr_error).__name__}: {attr_error}")
+                                        logger.warning(f"Full traceback:\n{traceback.format_exc()}")
                                         continue
                                 
                                 class Entry:
@@ -812,7 +813,10 @@ class ImpacketLDAPWrapper:
                                     entry_dict[attr_name] = attr_values[0] if attr_values else None
                             
                             except Exception as attr_error:
-                                logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
+                                import traceback
+                                attr_name_safe = attr_name if 'attr_name' in locals() else 'UNKNOWN'
+                                logger.warning(f"Failed to parse attribute '{attr_name_safe}' for entry {item_idx}: {type(attr_error).__name__}: {attr_error}")
+                                logger.warning(f"Full traceback:\n{traceback.format_exc()}")
                                 continue
                         
                         # Create entry object with proper attribute access
@@ -1028,8 +1032,9 @@ class ImpacketLDAPWrapper:
                                     
                                     except Exception as attr_error:
                                         import traceback
-                                        logger.warning(f"Failed to parse attribute for entry {item_idx}: {attr_error}")
-                                        logger.debug(f"Attribute parsing traceback: {traceback.format_exc()}")
+                                        attr_name_safe = attr_name if 'attr_name' in locals() else 'UNKNOWN'
+                                        logger.warning(f"Failed to parse attribute '{attr_name_safe}' for entry {item_idx}: {type(attr_error).__name__}: {attr_error}")
+                                        logger.warning(f"Full traceback:\n{traceback.format_exc()}")
                                         continue
                                 
                                 # Create entry object
