@@ -187,8 +187,20 @@ class PortScanner:
             'scan_start_time': time.time()
         }
         
+        # Early return if no computers to scan
+        if not computers or len(computers) == 0:
+            logger.warning("⚠️  No computers to scan")
+            logger.info("=" * 70)
+            logger.info("📊 PORT SCAN STATISTICS")
+            logger.info("=" * 70)
+            logger.info(f"Computers scanned: 0")
+            logger.info(f"Scan duration: 0.0 seconds")
+            return scan_results
+        
         # Parallel scanning using ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=min(self.max_threads, len(computers))) as executor:
+        # Ensure max_workers is at least 1
+        max_workers = max(1, min(self.max_threads, len(computers)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all computer scan tasks
             future_to_computer = {
                 executor.submit(self._scan_single_computer, computer, ip_records, ports, ping_check): computer

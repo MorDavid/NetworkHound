@@ -3069,11 +3069,17 @@ Author: Mor David (www.mordavid.com) | License: Non-Commercial
                 if len(all_ips) > 1000:
                     logger.warning(f"Network {network_str} has {len(all_ips)} IPs. This may take a while...")
                 
-                # Use DNS resolver to test connectivity
-                from core.dns_resolver import DNSResolver
-                resolver = DNSResolver(dns_server, args.scan_threads, use_tcp=getattr(args, 'dns_tcp', False))
-                live_results = resolver.test_connectivity_threaded(all_ips)
-                live_ips = [ip for ip, is_alive in live_results.items() if is_alive]
+                # Check if -Pn flag is enabled (skip ping check)
+                if getattr(args, 'Pn', False):
+                    # -Pn enabled: treat all IPs as live (no ping test)
+                    logger.info(f"⚠️  -Pn enabled: Treating all {len(all_ips)} IPs as live (skipping ping test)")
+                    live_ips = all_ips
+                else:
+                    # Default: Use DNS resolver to test connectivity with ping
+                    from core.dns_resolver import DNSResolver
+                    resolver = DNSResolver(dns_server, args.scan_threads, use_tcp=getattr(args, 'dns_tcp', False))
+                    live_results = resolver.test_connectivity_threaded(all_ips)
+                    live_ips = [ip for ip, is_alive in live_results.items() if is_alive]
                 
                 logger.info(f"✅ Found {len(live_ips)} live hosts in {network_str}")
                 all_live_ips.extend(live_ips)
