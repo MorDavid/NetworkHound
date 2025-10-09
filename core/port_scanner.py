@@ -9,8 +9,7 @@ import socket
 import time
 import logging
 import ipaddress
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from multiprocessing import cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils.config import COMMON_SERVICES
 from .dns_resolver import DNSResolver
 
@@ -18,28 +17,14 @@ from .dns_resolver import DNSResolver
 logger = logging.getLogger('NetworkHound.PortScanner')
 
 
-def scan_single_target(args):
-    """Helper function for multiprocessing - scan one IP:port combination"""
-    ip, port, timeout = args
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((ip, port))
-        sock.close()
-        return (ip, port) if result == 0 else None
-    except (socket.error, socket.timeout):
-        return None
-
-
 class PortScanner:
-    """Port scanner with multiprocessing and threading support"""
+    """Port scanner with threading support (multiprocessing disabled for stability)"""
     
-    def __init__(self, timeout=3, max_threads=10, use_multiprocessing=True):
+    def __init__(self, timeout=10, max_threads=10, use_multiprocessing=False):
         self.timeout = timeout
         self.max_threads = max_threads
-        self.use_multiprocessing = use_multiprocessing
-        # Use more processes for better parallelism (up to CPU count or max_threads)
-        self.max_processes = min(cpu_count() * 2, max_threads) if use_multiprocessing else 1
+        # Multiprocessing disabled - always use threading for stability
+        self.use_multiprocessing = False
         self.dns_resolver = DNSResolver(max_threads=max_threads)
     
     def scan_port(self, ip, port):
@@ -53,77 +38,59 @@ class PortScanner:
         except (socket.error, socket.timeout):
             return None
     
+    def _scan_single_port(self, ip, port):
+        """Helper function for threading - scan one IP:port combination"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.timeout)
+            result = sock.connect_ex((ip, port))
+            sock.close()
+            return (ip, port) if result == 0 else None
+        except (socket.error, socket.timeout):
+            return None
+    
     def scan_computer_ports_fast(self, computer_name, ips, ports):
-        """Fast multiprocessing port scan for multiple IPs"""
+        """Fast threaded port scan for multiple IPs (multiprocessing removed for stability)"""
         if not ips:
             return {}
         
         total_targets = len(ips) * len(ports)
         logger.debug(f"Fast scanning {computer_name} ({len(ips)} IPs × {len(ports)} ports = {total_targets} targets)")
         
-        # Create all IP:port combinations
-        scan_targets = [(ip, port, self.timeout) for ip in ips for port in ports]
-        
         scan_results = {ip: [] for ip in ips}
         open_count = 0
         
-        if self.use_multiprocessing and len(scan_targets) > 50:
-            # Use multiprocessing for large scans
-            logger.debug(f"   Using {self.max_processes} processes for multiprocessing...")
+        # Always use threading (multiprocessing removed)
+        logger.debug(f"   Using {self.max_threads} threads for threading...")
+        
+        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            # Submit all scan tasks
+            future_to_target = {}
+            for ip in ips:
+                for port in ports:
+                    future = executor.submit(self._scan_single_port, ip, port)
+                    future_to_target[future] = (ip, port)
             
-            with ProcessPoolExecutor(max_workers=self.max_processes) as executor:
-                # Submit all scan tasks
-                future_to_target = {
-                    executor.submit(scan_single_target, target): target 
-                    for target in scan_targets
-                }
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_target):
+                ip, port = future_to_target[future]
+                completed += 1
                 
-                # Collect results as they complete
-                completed = 0
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    ip, port, _ = target
-                    completed += 1
+                try:
+                    result = future.result(timeout=self.timeout + 2)
+                    if result:
+                        result_ip, result_port = result
+                        scan_results[result_ip].append(result_port)
+                        open_count += 1
+                        logger.debug(f"   {result_ip}:{result_port} - OPEN")
                     
-                    try:
-                        result = future.result()
-                        if result:
-                            result_ip, result_port = result
-                            scan_results[result_ip].append(result_port)
-                            open_count += 1
-                            logger.debug(f"   {result_ip}:{result_port} - OPEN")
+                    # Progress indicator for large scans
+                    if completed % 100 == 0:
+                        logger.debug(f"   Progress: {completed}/{total_targets} ({(completed/total_targets)*100:.1f}%)")
                         
-                        # Progress indicator for large scans
-                        if completed % 100 == 0:
-                            logger.debug(f"   Progress: {completed}/{total_targets} ({(completed/total_targets)*100:.1f}%)")
-                            
-                    except Exception as e:
-                        logger.debug(f"   Error scanning {ip}:{port} - {e}")
-        else:
-            # Use threading for smaller scans
-            logger.debug(f"   Using {self.max_threads} threads for threading...")
-            
-            with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-                # Submit all scan tasks
-                future_to_target = {
-                    executor.submit(scan_single_target, target): target 
-                    for target in scan_targets
-                }
-                
-                # Collect results as they complete
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    ip, port, _ = target
-                    
-                    try:
-                        result = future.result()
-                        if result:
-                            result_ip, result_port = result
-                            scan_results[result_ip].append(result_port)
-                            open_count += 1
-                            logger.debug(f"   {result_ip}:{result_port} - OPEN")
-                    except Exception as e:
-                        logger.debug(f"   Error scanning {ip}:{port} - {e}")
+                except Exception as e:
+                    logger.debug(f"   Error scanning {ip}:{port} - {e}")
         
         # Sort results and print summary
         for ip in scan_results:

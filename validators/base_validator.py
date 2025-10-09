@@ -8,18 +8,18 @@ Template for creating new protocol validators
 
 import logging
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from multiprocessing import cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger('NetworkHound.BaseValidator')
 
 class BaseValidator(ABC):
     """Abstract base class for protocol validators"""
     
-    def __init__(self, timeout=5, max_threads=10, use_multiprocessing=True):
+    def __init__(self, timeout=5, max_threads=10, use_multiprocessing=False):
         self.timeout = timeout
         self.max_threads = max_threads
-        self.use_multiprocessing = use_multiprocessing
+        # Multiprocessing disabled - always use threading for stability
+        self.use_multiprocessing = False
         self.protocol_name = self.__class__.__name__.replace('Validator', '').upper()
     
     @abstractmethod
@@ -82,59 +82,27 @@ class BaseValidator(ABC):
         
         results = {}
         
-        if self.use_multiprocessing and len(ip_port_list) > 20:
-            # Use multiprocessing for large datasets
-            max_workers = min(cpu_count(), self.max_threads)
-            logger.debug(f"Using multiprocessing with {max_workers} processes")
+        # Always use threading (multiprocessing disabled for stability)
+        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            # Submit all validation tasks
+            future_to_target = {
+                executor.submit(self.validate_single_target, ip, port, **kwargs): f"{ip}:{port}"
+                for ip, port in ip_port_list
+            }
             
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                # Prepare arguments for worker processes
-                worker_args = [
-                    (ip, port, self.timeout, kwargs)
-                    for ip, port in ip_port_list
-                ]
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                completed += 1
                 
-                # Submit all validation tasks
-                future_to_target = {
-                    executor.submit(self._worker_process, args): f"{args[0]}:{args[1]}"
-                    for args in worker_args
-                }
-                
-                # Collect results as they complete
-                completed = 0
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    completed += 1
-                    
-                    try:
-                        result = future.result()
-                        results[target] = result
-                        self._log_result(target, result, completed, len(ip_port_list))
-                    except Exception as e:
-                        results[target] = self._create_error_result(str(e))
-                        logger.debug(f"[{completed}/{len(ip_port_list)}] {target}: Validation error - {e}")
-        else:
-            # Use threading for smaller datasets
-            with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-                # Submit all validation tasks
-                future_to_target = {
-                    executor.submit(self.validate_single_target, ip, port, **kwargs): f"{ip}:{port}"
-                    for ip, port in ip_port_list
-                }
-                
-                # Collect results as they complete
-                completed = 0
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    completed += 1
-                    
-                    try:
-                        result = future.result()
-                        results[target] = result
-                        self._log_result(target, result, completed, len(ip_port_list))
-                    except Exception as e:
-                        results[target] = self._create_error_result(str(e))
-                        logger.debug(f"[{completed}/{len(ip_port_list)}] {target}: Validation error - {e}")
+                try:
+                    result = future.result()
+                    results[target] = result
+                    self._log_result(target, result, completed, len(ip_port_list))
+                except Exception as e:
+                    results[target] = self._create_error_result(str(e))
+                    logger.debug(f"[{completed}/{len(ip_port_list)}] {target}: Validation error - {e}")
         
         # Summary
         successful = sum(1 for r in results.values() 

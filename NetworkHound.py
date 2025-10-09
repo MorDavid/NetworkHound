@@ -125,7 +125,7 @@ Examples:
     parser.add_argument('--port-scan', action='store_true', help='Enable TCP port scanning')
     parser.add_argument('--ports', default='21,22,23,25,53,80,81,110,119,123,135,137,139,143,264,389,443,445,554,636,1433,1434,3306,3389,5060,5061,5222,5800,5801,5900,5901,5985,5986,8009,8080,8443,9200,44443', 
                        help='Comma-separated list of ports to scan (default: common ports)')
-    parser.add_argument('--scan-timeout', type=int, default=3, help='Port scan timeout in seconds (default: 3)')
+    parser.add_argument('--scan-timeout', type=int, default=10, help='Port scan timeout in seconds (default: 10)')
     parser.add_argument('--scan-threads', type=int, default=10, help='Number of concurrent threads for DNS resolution and port scanning (default: 10)')
     parser.add_argument('--valid-http', action='store_true', help='Test HTTP/HTTPS connectivity on open ports')
     parser.add_argument('--valid-smb', action='store_true', help='Test SMB connectivity and enumerate shares on SMB ports (139, 445)')

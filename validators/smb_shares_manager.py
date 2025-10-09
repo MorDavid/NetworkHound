@@ -9,8 +9,7 @@ Handles all SMB share operations including discovery, validation, and management
 import logging
 from impacket.smbconnection import SMBConnection
 from impacket.smb3structs import SMB2_DIALECT_002, SMB2_DIALECT_21, SMB2_DIALECT_30
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from multiprocessing import cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils.config import MAX_ERROR_LENGTH
 
 # Configure logging
@@ -19,10 +18,11 @@ logger = logging.getLogger('NetworkHound.SMBSharesManager')
 class SMBSharesManager:
     """Comprehensive SMB shares management class"""
     
-    def __init__(self, timeout=5, max_threads=10, use_multiprocessing=True):
+    def __init__(self, timeout=5, max_threads=10, use_multiprocessing=False):
         self.timeout = timeout
         self.max_threads = max_threads
-        self.use_multiprocessing = use_multiprocessing
+        # Multiprocessing disabled - always use threading for stability
+        self.use_multiprocessing = False
         
     def discover_smb_shares(self, ip, port, username="", password="", domain="", ntlm_hash="", kerberos_ticket=""):
         """Discover SMB shares on a specific IP:port"""
@@ -348,63 +348,29 @@ class SMBSharesManager:
         
         smb_results = {}
         
-        if self.use_multiprocessing and len(smb_targets) > 10:
-            # Use multiprocessing for large datasets
-            max_workers = min(cpu_count(), self.max_threads)
-            logger.debug(f"Using multiprocessing with {max_workers} processes")
+        # Always use threading (multiprocessing disabled for stability)
+        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            # Submit all SMB validation tasks
+            future_to_target = {
+                executor.submit(self.discover_smb_shares, ip, port, username, password, domain, ntlm_hash, kerberos_ticket): f"{ip}:{port}"
+                for ip, port in smb_targets
+            }
             
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                # Prepare arguments for worker processes
-                worker_args = [
-                    (ip, port, self.timeout, username, password, domain, ntlm_hash, kerberos_ticket)
-                    for ip, port in smb_targets
-                ]
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                completed += 1
                 
-                # Submit all SMB validation tasks
-                future_to_target = {
-                    executor.submit(self._smb_worker, args): f"{args[0]}:{args[1]}"
-                    for args in worker_args
-                }
-                
-                # Collect results as they complete
-                completed = 0
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    completed += 1
-                    
-                    try:
-                        result = future.result()
-                        smb_results[target] = result
-                        self._log_smb_result(target, result, completed, len(smb_targets))
-                    except Exception as e:
-                        smb_results[target] = {
-                            'smb': {'status': False, 'error': str(e)[:MAX_ERROR_LENGTH]}
-                        }
-                        logger.debug(f"[{completed}/{len(smb_targets)}] {target}: Validation error - {e}")
-        else:
-            # Use threading for smaller datasets
-            with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-                # Submit all SMB validation tasks
-                future_to_target = {
-                    executor.submit(self.discover_smb_shares, ip, port, username, password, domain, ntlm_hash, kerberos_ticket): f"{ip}:{port}"
-                    for ip, port in smb_targets
-                }
-                
-                # Collect results as they complete
-                completed = 0
-                for future in as_completed(future_to_target):
-                    target = future_to_target[future]
-                    completed += 1
-                    
-                    try:
-                        result = future.result()
-                        smb_results[target] = result
-                        self._log_smb_result(target, result, completed, len(smb_targets))
-                    except Exception as e:
-                        smb_results[target] = {
-                            'smb': {'status': False, 'error': str(e)[:MAX_ERROR_LENGTH]}
-                        }
-                        logger.debug(f"[{completed}/{len(smb_targets)}] {target}: Validation error - {e}")
+                try:
+                    result = future.result()
+                    smb_results[target] = result
+                    self._log_smb_result(target, result, completed, len(smb_targets))
+                except Exception as e:
+                    smb_results[target] = {
+                        'smb': {'status': False, 'error': str(e)[:MAX_ERROR_LENGTH]}
+                    }
+                    logger.debug(f"[{completed}/{len(smb_targets)}] {target}: Validation error - {e}")
         
         # Summary
         smb_success = sum(1 for r in smb_results.values() if r['smb']['status'])
@@ -416,14 +382,6 @@ class SMBSharesManager:
         logger.info(f"  - Auth required: {auth_required}")
         
         return smb_results
-    
-    def _smb_worker(self, args):
-        """Worker function for multiprocessing SMB validation"""
-        ip, port, timeout, username, password, domain, ntlm_hash, kerberos_ticket = args
-        
-        # Create a temporary SMBSharesManager instance for this process
-        manager = SMBSharesManager(timeout=timeout, use_multiprocessing=False)
-        return manager.discover_smb_shares(ip, port, username, password, domain, ntlm_hash, kerberos_ticket)
     
     def _log_smb_result(self, target, result, completed, total):
         """Log SMB validation result"""

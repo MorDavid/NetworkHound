@@ -211,7 +211,10 @@ class NetworkTopologyBuilder:
         return node_id
     
     def create_computer_nodes(self, computers, dns_records, port_scan_results=None, http_validation_results=None, smb_validation_results=None, subnets=None, username="unknown"):
-        """Create Computer nodes and their relationships"""
+        """Create Computer nodes and their relationships (only for computers with IP addresses or open ports)"""
+        computers_created = 0
+        computers_skipped = 0
+        
         for computer in computers:
             if not computer['sid'] or not computer['computer_name']:
                 continue
@@ -252,6 +255,12 @@ class NetworkTopologyBuilder:
                 logger.debug(f"No port scan results for {computer['computer_name']}")
             
             # SMB validation results removed - only keeping ip_addresses and open_ports
+            
+            # Skip computers with no IP addresses and no open ports (not useful in output)
+            if not ip_addresses and not properties["open_ports"]:
+                logger.debug(f"⚠️  Skipping Computer {computer['computer_name']} - no IP addresses or open ports")
+                computers_skipped += 1
+                continue
             
             # Create Website nodes and relationships (avoid duplicates per computer)
             if http_validation_results and port_scan_results and computer['computer_name'] in port_scan_results:
@@ -310,6 +319,7 @@ class NetworkTopologyBuilder:
                 kinds=["Computer"],
                 properties=properties
             )
+            computers_created += 1
             
             # Create edges from computer to subnets for each IP
             if ip_addresses and subnets:
@@ -317,6 +327,11 @@ class NetworkTopologyBuilder:
             
             # Create FileShare nodes and relationships (only if SMB validation found shares)
             self.create_fileshare_nodes_from_smb_validation(computer, ip_addresses, smb_validation_results, username)
+        
+        # Log summary
+        logger.info(f"✅ Created {computers_created} Computer nodes (computers with IP addresses or open ports)")
+        if computers_skipped > 0:
+            logger.info(f"⚠️  Skipped {computers_skipped} computers (no IP addresses or open ports - not useful in output)")
     
     def create_computer_subnet_edges(self, computer, ip_addresses, subnets):
         """Create edges from computer to subnets"""
@@ -382,8 +397,32 @@ class NetworkTopologyBuilder:
         
         logger.info(f"Creating Device nodes for {len(shadow_devices)} shadow-IT devices...")
         
+        devices_created = 0
+        devices_skipped = 0
+        
         for device_id, device_info in shadow_devices.items():
             device_ip = device_info['ip']
+            
+            # Check if device has open ports
+            has_open_ports = False
+            all_open_ports = []
+            
+            if port_scan_results and device_info['device_name'] in port_scan_results:
+                device_ports = port_scan_results[device_info['device_name']]
+                for ip, ports in device_ports.items():
+                    if ports:  # If there are any open ports
+                        has_open_ports = True
+                        for port in ports:
+                            all_open_ports.append(port)
+            
+            # Only create Device node if it has open ports (confirmed reachable)
+            if not has_open_ports:
+                logger.debug(f"Skipping Device {device_info['ip']} - no open ports found (device not reachable)")
+                devices_skipped += 1
+                continue
+            
+            devices_created += 1
+            
             device_properties = {
                 "name": device_info['device_name'],
                 "ip_address": device_ip,
@@ -392,17 +431,10 @@ class NetworkTopologyBuilder:
                 "site": device_info['site']
             }
             
-            # Add port scan results if available
-            if port_scan_results and device_info['device_name'] in port_scan_results:
-                device_ports = port_scan_results[device_info['device_name']]
-                all_open_ports = []
-                for ip, ports in device_ports.items():
-                    for port in ports:
-                        all_open_ports.append(port)
-                
-                if all_open_ports:
-                    unique_ports = sorted(list(set(all_open_ports)))
-                    device_properties["open_ports"] = unique_ports
+            # Add port scan results
+            if all_open_ports:
+                unique_ports = sorted(list(set(all_open_ports)))
+                device_properties["open_ports"] = unique_ports
             
             # Create Device node
             self.builder.create_node(
@@ -429,6 +461,11 @@ class NetworkTopologyBuilder:
             self.create_device_subnet_edge(device_id, device_info)
             
             logger.debug(f"Created Device node: {device_info['ip']} (Shadow-IT)")
+        
+        # Log summary
+        logger.info(f"✅ Created {devices_created} Device nodes (devices with open ports)")
+        if devices_skipped > 0:
+            logger.info(f"⚠️  Skipped {devices_skipped} devices (no open ports - not reachable)")
     
     def create_device_website_relationships(self, device_id, device_ip, http_validation_results):
         """Create Website relationships for shadow-IT devices"""

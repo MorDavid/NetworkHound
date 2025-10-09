@@ -14,8 +14,7 @@ import hashlib
 import base64
 import logging
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-from multiprocessing import cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils.config import MAX_TITLE_LENGTH, MAX_ERROR_LENGTH, MAX_BODY_SIZE
 
 # Configure logging
@@ -32,24 +31,15 @@ except ImportError:
 # Disable SSL warnings for HTTP checks
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def test_http_connectivity_worker(args):
-    """Worker function for multiprocessing HTTP validation"""
-    ip, port, timeout, detailed_ssl = args
-    
-    # Create a temporary HTTPValidator instance for this process
-    validator = HTTPValidator(timeout=timeout, detailed_ssl=detailed_ssl, use_multiprocessing=False)
-    return validator.test_http_connectivity(ip, port)
-
-
 class HTTPValidator:
     """HTTP/HTTPS connectivity validator"""
     
-    def __init__(self, timeout=5, max_threads=10, detailed_ssl=True, use_multiprocessing=True):
+    def __init__(self, timeout=5, max_threads=10, detailed_ssl=True, use_multiprocessing=False):
         self.timeout = timeout
         self.max_threads = max_threads
         self.detailed_ssl = detailed_ssl
-        self.use_multiprocessing = use_multiprocessing
-        self.max_processes = min(cpu_count(), max_threads // 2) if use_multiprocessing else 1
+        # Multiprocessing disabled - always use threading for stability
+        self.use_multiprocessing = False
     
     def get_ssl_certificate_info(self, ip, port, detailed=True):
         """Get SSL certificate information
@@ -416,7 +406,7 @@ class HTTPValidator:
         return results
     
     def validate_http_ports_threaded(self, ip_port_list):
-        """Validate HTTP/HTTPS connectivity on multiple IP:port combinations using optimal concurrency"""
+        """Validate HTTP/HTTPS connectivity on multiple IP:port combinations using threading"""
         if not ip_port_list:
             return {}
         
@@ -425,72 +415,52 @@ class HTTPValidator:
         
         http_results = {}
         
-        # Always use multiprocessing when enabled (better performance than threading)
-        use_mp = self.use_multiprocessing
+        # Always use threading (multiprocessing disabled for stability)
+        logger.info(f"🧵 Using {self.max_threads} threads for threading...")
         
-        if use_mp:
-            # Use multiprocessing for better performance (bypasses GIL)
-            logger.info(f"🚀 Using {self.max_processes} processes for multiprocessing...")
+        # Use ThreadPoolExecutor for concurrent HTTP validation
+        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            # Submit all HTTP validation tasks
+            future_to_target = {
+                executor.submit(self.test_http_connectivity, ip, port): f"{ip}:{port}"
+                for ip, port in ip_port_list
+            }
             
-            with ProcessPoolExecutor(max_workers=self.max_processes) as executor:
-                # Prepare arguments for worker function
-                worker_args = [
-                    (ip, port, self.timeout, self.detailed_ssl)
-                    for ip, port in ip_port_list
-                ]
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                completed += 1
                 
-                # Submit all HTTP validation tasks
-                future_to_target = {
-                    executor.submit(test_http_connectivity_worker, args): f"{args[0]}:{args[1]}"
-                    for args in worker_args
-                }
-        else:
-            # Fallback to threading (if multiprocessing disabled)
-            logger.info(f"🧵 Using {self.max_threads} threads for threading...")
-            
-            # Use ThreadPoolExecutor for concurrent HTTP validation
-            with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-                # Submit all HTTP validation tasks
-                future_to_target = {
-                    executor.submit(self.test_http_connectivity, ip, port): f"{ip}:{port}"
-                    for ip, port in ip_port_list
-                }
-        
-        # Collect results as they complete (common for both threading and multiprocessing)
-        completed = 0
-        for future in as_completed(future_to_target):
-            target = future_to_target[future]
-            completed += 1
-            
-            try:
-                result = future.result()
-                http_results[target] = result
-                
-                # Show results
-                http_status = "✅" if result['http']['status'] else "❌"
-                https_status = "✅" if result['https']['status'] else "❌"
-                
-                details = []
-                if result['http']['status']:
-                    details.append(f"HTTP({result['http']['code']})")
-                    if result['http']['title']:
-                        details.append(f"'{result['http']['title']}'")
-                        
-                if result['https']['status']:
-                    ssl_info = "Self-Signed" if result['https'].get('is_self_signed', False) else "Valid SSL"
-                    details.append(f"HTTPS({result['https']['code']}, {ssl_info})")
-                    if result['https']['title']:
-                        details.append(f"'{result['https']['title']}'")
-                
-                detail_str = " - " + ", ".join(details) if details else ""
-                logger.info(f"[{completed}/{len(ip_port_list)}] {target}: {http_status}HTTP {https_status}HTTPS{detail_str}")
-                
-            except Exception as e:
-                http_results[target] = {
-                    'http': {'status': False, 'error': str(e)},
-                    'https': {'status': False, 'error': str(e)}
-                }
-                logger.info(f"[{completed}/{len(ip_port_list)}] {target}: Validation error - {e}")
+                try:
+                    result = future.result()
+                    http_results[target] = result
+                    
+                    # Show results
+                    http_status = "✅" if result['http']['status'] else "❌"
+                    https_status = "✅" if result['https']['status'] else "❌"
+                    
+                    details = []
+                    if result['http']['status']:
+                        details.append(f"HTTP({result['http']['code']})")
+                        if result['http']['title']:
+                            details.append(f"'{result['http']['title']}'")
+                            
+                    if result['https']['status']:
+                        ssl_info = "Self-Signed" if result['https'].get('is_self_signed', False) else "Valid SSL"
+                        details.append(f"HTTPS({result['https']['code']}, {ssl_info})")
+                        if result['https']['title']:
+                            details.append(f"'{result['https']['title']}'")
+                    
+                    detail_str = " - " + ", ".join(details) if details else ""
+                    logger.info(f"[{completed}/{len(ip_port_list)}] {target}: {http_status}HTTP {https_status}HTTPS{detail_str}")
+                    
+                except Exception as e:
+                    http_results[target] = {
+                        'http': {'status': False, 'error': str(e)},
+                        'https': {'status': False, 'error': str(e)}
+                    }
+                    logger.info(f"[{completed}/{len(ip_port_list)}] {target}: Validation error - {e}")
         
         # Summary
         http_success = sum(1 for r in http_results.values() if r['http']['status'])
