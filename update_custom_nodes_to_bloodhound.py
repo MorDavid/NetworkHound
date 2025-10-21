@@ -286,6 +286,9 @@ def main():
             if not uploader.reset_custom_nodes():
                 logger.error("Failed to reset custom nodes")
                 sys.exit(1)
+            logger.info("Custom nodes reset completed")
+            # Exit after reset, don't upload
+            return
         
         # Upload model
         if not uploader.upload_model(args.model):
