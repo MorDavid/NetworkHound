@@ -12,6 +12,10 @@ import argparse
 import sys
 import logging
 from typing import Optional
+import urllib3
+
+# Disable SSL warnings for self-signed certificates
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def setup_logging(verbose: bool = False) -> None:
     """Setup logging configuration."""
@@ -94,7 +98,7 @@ class BloodHoundUploader:
         self.logger.info(f"Connecting to {self.server_url}...")
         
         try:
-            response = self.session.post(login_url, json=login_data)
+            response = self.session.post(login_url, json=login_data, verify=False)
             response.raise_for_status()
             
             data = response.json()
@@ -128,7 +132,7 @@ class BloodHoundUploader:
         
         try:
             self.logger.info("Fetching existing custom nodes...")
-            response = self.session.get(list_url, headers=headers)
+            response = self.session.get(list_url, headers=headers, verify=False)
             response.raise_for_status()
             
             data = response.json()
@@ -161,7 +165,7 @@ class BloodHoundUploader:
         }
         
         try:
-            response = self.session.delete(delete_url, headers=headers)
+            response = self.session.delete(delete_url, headers=headers, verify=False)
             response.raise_for_status()
             
             self.logger.info(f"Deleted custom node: {kind_name}")
@@ -214,7 +218,7 @@ class BloodHoundUploader:
                 f"Uploading Custom Nodes/Edges model (pre‑ingest) from {model_file}..."
             )
             
-            response = self.session.post(upload_url, json=model_data, headers=headers)
+            response = self.session.post(upload_url, json=model_data, headers=headers, verify=False)
             response.raise_for_status()
             
             self.logger.info("Model uploaded successfully. No data was ingested. You can now ingest graph data.")
@@ -243,7 +247,7 @@ class BloodHoundUploader:
         }
         
         try:
-            response = self.session.post(logout_url, headers=headers)
+            response = self.session.post(logout_url, headers=headers, verify=False)
             response.raise_for_status()
             
             self.logger.info("Successfully logged out from BloodHound")
