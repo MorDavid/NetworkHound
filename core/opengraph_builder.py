@@ -156,10 +156,10 @@ class NetworkTopologyBuilder:
                 "ssl_validity_period_days": ssl_cert.get('validity_period_days'),
                 
                 # Subject Alternative Names (enhanced)
-                "ssl_subject_alt_names": ssl_cert.get('subject_alt_names', []),
-                "ssl_san_dns_names": ssl_cert.get('san_dns_names', []),
-                "ssl_san_ip_addresses": ssl_cert.get('san_ip_addresses', []),
-                "ssl_san_email_addresses": ssl_cert.get('san_email_addresses', []),
+                "ssl_subject_alt_names": [str(i) for i in (ssl_cert.get('subject_alt_names') or []) if i is not None],
+                "ssl_san_dns_names": [str(i) for i in (ssl_cert.get('san_dns_names') or []) if i is not None],
+                "ssl_san_ip_addresses": [str(i) for i in (ssl_cert.get('san_ip_addresses') or []) if i is not None],
+                "ssl_san_email_addresses": [str(i) for i in (ssl_cert.get('san_email_addresses') or []) if i is not None],
                 
                 # Certificate chain
                 "ssl_certificate_chain_length": ssl_cert.get('certificate_chain_length', 1),
